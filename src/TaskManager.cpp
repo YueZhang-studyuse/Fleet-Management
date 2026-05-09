@@ -105,14 +105,14 @@ bool TaskManager::set_task_assignment(vector< int>& assignment)
     }
     
     // cout<<"assignments:"<<endl;
-    // for (int a = 0; a < current_assignment.size(); a++)
-    // {
-    //     if (actual_schedule[a].empty() || current_assignment[a] != actual_schedule[a].back().second)
-    //     {
-    //         //actual_schedule[a].push_back(make_pair(curr_timestep,current_assignment[a]));
-    //         cout<<"(Agent "<<a<<",Task "<<current_assignment[a]<<")";
-    //     }
-    // }
+    for (int a = 0; a < current_assignment.size(); a++)
+    {
+        if (actual_schedule[a].empty() || current_assignment[a] != actual_schedule[a].back().second)
+        {
+            actual_schedule[a].push_back(make_pair(curr_timestep,current_assignment[a]));
+            // cout<<"(Agent "<<a<<",Task "<<current_assignment[a]<<")";
+        }
+    }
     // cout<<endl;
 
     return true;
@@ -186,10 +186,8 @@ void TaskManager::sync_shared_env(SharedEnvironment* env)
  */
 void TaskManager::reveal_tasks(int timestep)
 {
-    int cnt = 0;
-    int release_feq = 5;
     new_tasks.clear(); //prepare to push all new revealed tasks to the shared environment
-    while (ongoing_tasks.size() < num_tasks_reveal && cnt < release_feq)
+    while (ongoing_tasks.size() < num_tasks_reveal)
     {
         int i = task_id%tasks.size();
         list<int> locs = tasks[i];
@@ -199,7 +197,6 @@ void TaskManager::reveal_tasks(int timestep)
         new_tasks.push_back(task->task_id);         // record the new tasks
         logger->log_info("Task " + std::to_string(task_id) + " is revealed");
         task_id++;
-        cnt++;
     }
 }
 

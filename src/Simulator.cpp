@@ -4,10 +4,8 @@ using json = nlohmann::ordered_json;
 
 vector<State> Simulator::move(vector<Action>& actions) 
 {
-    //bool move_valid = true;
     for (int k = 0; k < num_of_agents; k++)
     {
-        //move_valid = false;
         all_valid = false;
         if (k >= actions.size()){
             planner_movement[k] = Action::NA;
@@ -20,7 +18,6 @@ vector<State> Simulator::move(vector<Action>& actions)
 
     if (!model->is_valid(curr_states, actions, timestep))
     {
-        //move_valid = false;
         all_valid = false;
         actions = std::vector<Action>(num_of_agents, Action::WA);
     }
@@ -30,35 +27,9 @@ vector<State> Simulator::move(vector<Action>& actions)
 
     // cout<<"movements:"<<endl;
 
-    // for (int k = 0; k < num_of_agents; k++){
-    //     paths[k].push_back(curr_states[k]);
-    //     // actual_movements[k].push_back(actions[k]);
-    //     if (actions[k] == Action::N)
-    //         {
-    //             cout<<"NO";
-    //         }
-    //         else if (actions[k] == Action::E)
-    //         {
-    //             cout<<"EA";
-    //         } 
-    //         else if (actions[k] == Action::S)
-    //         {
-    //             cout<<"SO";
-    //         }
-    //         else if (actions[k] == Action::WE)
-    //         {
-    //             cout<<"WE";
-    //         }
-    //         else if (actions[k] == Action::NA)
-    //         {
-    //             cout<<"T";
-    //         }
-    //         else
-    //         {
-    //             cout<<"W";
-    //         }
-    //         cout<<",";
-    //}
+    for (int k = 0; k < num_of_agents; k++){
+        paths[k].push_back(curr_states[k]);
+    }
     // cout<<endl;
     //return move_valid;
     return curr_states;
@@ -154,19 +125,19 @@ json Simulator::actual_path_to_json() const
             // }
             if (action == Action::N)
             {
-                path+="NO";
+                path+="U";
             }
             else if (action == Action::E)
             {
-                path+="EA";
+                path+="R";
             } 
             else if (action == Action::S)
             {
-                path+="SO";
+                path+="D";
             }
             else if (action == Action::WE)
             {
-                path+="WE";
+                path+="L";
             }
             else if (action == Action::NA)
             {
@@ -225,19 +196,19 @@ json Simulator::planned_path_to_json() const
             // }
             if (action == Action::N)
             {
-                path+="NO";
+                path+="U";
             }
             else if (action == Action::E)
             {
-                path+="EA";
+                path+="R";
             } 
             else if (action == Action::S)
             {
-                path+="SO";
+                path+="D";
             }
             else if (action == Action::WE)
             {
-                path+="WE";
+                path+="L";
             }
             else if (action == Action::NA)
             {
