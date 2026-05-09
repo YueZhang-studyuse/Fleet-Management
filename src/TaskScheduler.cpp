@@ -45,14 +45,6 @@ void TaskScheduler::plan(int time_limit, std::vector<int> & proposed_schedule)
     }
     else if (solver == 3)
     {
-        DefaultPlanner::schedule_plan_matching(limit, proposed_schedule, env, background_flow, use_traffic, new_only, max_matching_edges);
-    }
-    else  if (solver == 4)
-    {
-        DefaultPlanner::schedule_plan_h(limit, proposed_schedule, env, new_only);
-    }
-    else  if (solver == 5)
-    {
         DefaultPlanner::schedule_plan_raw(limit, proposed_schedule, env);
     }
     else
