@@ -28,7 +28,7 @@ vector<State> Simulator::move(vector<Action>& actions)
     // cout<<"movements:"<<endl;
 
     for (int k = 0; k < num_of_agents; k++){
-        paths[k].push_back(curr_states[k]);
+        actual_movements[k].push_back(actions[k]);
     }
     // cout<<endl;
     //return move_valid;
