@@ -7,6 +7,7 @@ namespace DefaultPlanner{
 std::mt19937 mt;
 std::unordered_set<int> free_agents;
 std::unordered_set<int> free_tasks;
+std::vector<int> parking_locs; //store the parking locations in the map for later use in scheduling
 
 unordered_map<int,list<int>> agent_guide_path; //agent id, guide path from flow
 
@@ -33,6 +34,12 @@ void schedule_initialize(int preprocess_time_limit, SharedEnvironment* env)
     // cout<<"schedule initialise limit" << preprocess_time_limit<<endl;
     DefaultPlanner::init_heuristics(env);
     mt.seed(0);
+    //insert parking locations from the map
+    for (int loc = 0; loc < env->map.size(); loc++)
+    {
+        if (env->map[loc] == 2)
+            parking_locs.push_back(loc);
+    }
     return;
 }
 
@@ -134,12 +141,6 @@ void schedule_plan_flow(int time_limit, std::vector<int> & proposed_schedule,  S
             flexible_agent_ids.push_back(agent);
     }
 
-    for (int agent = 0; agent < env->num_of_agents; agent++)
-    {
-        if (env->curr_task_schedule[agent] == -1)
-            flexible_agent_ids.push_back(agent);
-    }
-
     for (auto task: env->task_pool)
     {
         if (task.second.idx_next_loc > 0) //task opened
@@ -208,11 +209,11 @@ void schedule_plan_flow(int time_limit, std::vector<int> & proposed_schedule,  S
     supply[source] = num_workers; // Source supplies workers
     supply[sink] = -num_workers;  // Sink absorbs tasks
 
-    if (num_workers > num_tasks)
-    {
-        supply[source] = num_tasks; // Source supplies tasks
-        supply[sink] = -num_tasks;  // Sink absorbs tasks
-    }
+    // if (num_workers > num_tasks)
+    // {
+    //     supply[source] = num_tasks; // Source supplies tasks
+    //     supply[sink] = -num_tasks;  // Sink absorbs tasks
+    // }
 
     for (int i = 0; i < num_workers; ++i) supply[map_nodes[i]] = 0;
 
@@ -226,7 +227,7 @@ void schedule_plan_flow(int time_limit, std::vector<int> & proposed_schedule,  S
 
     unordered_map<int, int> node_to_task_id;
 
-
+    // Connect tasks to sink
     for (auto task: task_loc_ids)
     {
         int loc = task.first;
@@ -234,6 +235,18 @@ void schedule_plan_flow(int time_limit, std::vector<int> & proposed_schedule,  S
         node_to_task_id[lemon::ListDigraphBase::id(map_nodes[loc])] = loc;
         capacity[a] = task.second.size();
         cost[a] = 0;
+    }
+
+    // connect parking to sink for flexible agents that are not assigned to any opened task
+    if (num_tasks < num_workers)
+    {
+        for (int loc : parking_locs)
+        {
+            ListDigraph::Arc a = g.addArc(map_nodes[loc], sink);
+            node_to_task_id[lemon::ListDigraphBase::id(map_nodes[loc])] = loc;
+            capacity[a] = (num_workers - num_tasks); // allow multiple agents to be assigned to parking
+            cost[a] = 10000; //high cost to avoid using parking unless necessary
+        }
     }
 
     vector<int> neighbor = {-env->cols, 1, env->cols, -1};
@@ -295,6 +308,7 @@ void schedule_plan_flow(int time_limit, std::vector<int> & proposed_schedule,  S
         for (int i = 0; i < num_workers; i++) 
         {
             ListDigraph::Node current = map_nodes[env->curr_states[flexible_agent_ids[i]].location];
+            //cout<<"checking agent "<<flexible_agent_ids[i]<<" at location "<<node_to_maploc[lemon::ListDigraphBase::id(current)]<<endl;
 
             list<int> path;
 
@@ -331,18 +345,28 @@ void schedule_plan_flow(int time_limit, std::vector<int> & proposed_schedule,  S
             if (node_to_task_id.find(lemon::ListDigraphBase::id(current)) != node_to_task_id.end()) 
             {
                 int task_loc = node_to_task_id[lemon::ListDigraphBase::id(current)];
-                int task_id = task_loc_ids[task_loc].front();
-                // node_to_task_id[current].pop_front();
-                path.push_back(task_loc);
-                //cout << "Worker " << flexible_agent_ids[i] << " is assigned to Task " << task_id  << " through intermediate nodes." << endl;
-                proposed_schedule[flexible_agent_ids[i]] = task_id;
-                if (use_traffic)
-                    agent_guide_path[flexible_agent_ids[i]] = path;
-                task_loc_ids[task_loc].pop_front();
-                if (task_loc_ids[task_loc].empty())
+                if (task_loc_ids.find(task_loc) == task_loc_ids.end()) // the task location is a parking location
                 {
-                    task_loc_ids.erase(task_loc);
-                    node_to_task_id.erase(lemon::ListDigraphBase::id(current));
+                    proposed_schedule[flexible_agent_ids[i]] = -2; // assign a dummy task id for parking
+                    env->goal_locations[flexible_agent_ids[i]].clear(); // clear the agent's goal locations
+                    env->goal_locations[flexible_agent_ids[i]].push_back({task_loc, env->curr_timestep}); // assign the agent to go to parking location
+                    //cout<<"assigning agent "<<flexible_agent_ids[i]<<" to parking location "<<task_loc<<endl;
+                }
+                else
+                {
+                    int task_id = task_loc_ids[task_loc].front();
+                    // node_to_task_id[current].pop_front();
+                    path.push_back(task_loc);
+                    //cout << "Worker " << flexible_agent_ids[i] << " is assigned to Task " << task_id  << " through intermediate nodes." << endl;
+                    proposed_schedule[flexible_agent_ids[i]] = task_id;
+                    if (use_traffic)
+                        agent_guide_path[flexible_agent_ids[i]] = path;
+                    task_loc_ids[task_loc].pop_front();
+                    if (task_loc_ids[task_loc].empty())
+                    {
+                        task_loc_ids.erase(task_loc);
+                        node_to_task_id.erase(lemon::ListDigraphBase::id(current));
+                    }
                 }
             }
             else 
@@ -456,7 +480,7 @@ void schedule_plan_flow_hist(int time_limit, std::vector<int> & proposed_schedul
 
     unordered_map<int, int> node_to_task_id;
 
-
+    //connect tasks to sink
     for (auto task: task_loc_ids)
     {
         int loc = task.first;

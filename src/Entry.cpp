@@ -47,7 +47,8 @@ void Entry::update_goal_locations(std::vector<int> & proposed_schedule)
     // The first unfinished errand/location of each task is the next goal for the assigned agent.
     for (size_t i = 0; i < proposed_schedule.size(); i++)
     {
-        env->goal_locations[i].clear();
+        if (proposed_schedule[i] != -2)
+            env->goal_locations[i].clear(); // not clear if the agent is assigned to parking task
         int t_id = proposed_schedule[i];
         if (t_id == -1)
             continue;
