@@ -243,12 +243,12 @@ void schedule_plan_flow(int time_limit, std::vector<int> & proposed_schedule,  S
 
     for (int loc = 0; loc < env->map.size(); loc++)
     {
-        if (env->map[loc] != 0) continue;
+        if (env->map[loc] == 1) continue;
         //try four directions
         for (int i = 0; i < 4; i++)
         {
             int neighbor_loc = loc + neighbor[i];
-            if (neighbor_loc < 0 || neighbor_loc >= env->map.size() || env->map[neighbor_loc] != 0)
+            if (neighbor_loc < 0 || neighbor_loc >= env->map.size() || env->map[neighbor_loc] == 1)
                 continue;
             ListDigraph::Arc a = g.addArc(map_nodes[loc], map_nodes[neighbor_loc]);
 
@@ -472,12 +472,12 @@ void schedule_plan_flow_hist(int time_limit, std::vector<int> & proposed_schedul
 
     for (int loc = 0; loc < env->map.size(); loc++)
     {
-        if (env->map[loc] != 0) continue;
+        if (env->map[loc] == 1) continue;
         //try four directions
         for (int i = 0; i < 4; i++)
         {
             int neighbor_loc = loc + neighbor[i];
-            if (neighbor_loc < 0 || neighbor_loc >= env->map.size() || env->map[neighbor_loc] != 0)
+            if (neighbor_loc < 0 || neighbor_loc >= env->map.size() || env->map[neighbor_loc] == 1)
                 continue;
             ListDigraph::Arc a = g.addArc(map_nodes[loc], map_nodes[neighbor_loc]);
 

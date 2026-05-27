@@ -14,17 +14,17 @@ void init_neighbor(SharedEnvironment* env){
 	for (int row=0; row<env->rows; row++){
 		for (int col=0; col<env->cols; col++){
 			int loc = row*env->cols+col;
-			if (env->map[loc]==0){
-				if (row>0 && env->map[loc-env->cols]==0){
+			if (env->map[loc]!=1){
+				if (row>0 && env->map[loc-env->cols]!=1){
 					global_neighbors[loc].push_back(loc-env->cols);
 				}
-				if (row<env->rows-1 && env->map[loc+env->cols]==0){
+				if (row<env->rows-1 && env->map[loc+env->cols]!=1){
 					global_neighbors[loc].push_back(loc+env->cols);
 				}
-				if (col>0 && env->map[loc-1]==0){
+				if (col>0 && env->map[loc-1]!=1){
 					global_neighbors[loc].push_back(loc-1);
 				}
-				if (col<env->cols-1 && env->map[loc+1]==0){
+				if (col<env->cols-1 && env->map[loc+1]!=1){
 					global_neighbors[loc].push_back(loc+1);
 				}
 			}

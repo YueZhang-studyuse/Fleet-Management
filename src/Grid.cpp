@@ -59,6 +59,8 @@ Grid::Grid(string fname)
             int id = cols * i + j;
             if (line[j] == '@' || line[j] == 'T') // obstacle
                 map[id] = 1;
+            else if (line[j] == 'P') // parking location
+                map[id] = 2;
             else   // free space
                 map[id] = 0;
         }
