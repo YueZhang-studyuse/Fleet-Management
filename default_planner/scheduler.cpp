@@ -134,12 +134,6 @@ void schedule_plan_flow(int time_limit, std::vector<int> & proposed_schedule,  S
             flexible_agent_ids.push_back(agent);
     }
 
-    for (int agent = 0; agent < env->num_of_agents; agent++)
-    {
-        if (env->curr_task_schedule[agent] == -1)
-            flexible_agent_ids.push_back(agent);
-    }
-
     for (auto task: env->task_pool)
     {
         if (task.second.idx_next_loc > 0) //task opened
