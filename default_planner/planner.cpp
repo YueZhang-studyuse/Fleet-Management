@@ -194,8 +194,13 @@ namespace DefaultPlanner{
             // reset the pibt priority if the agent reached prvious goal location and switch to new goal location
             if(require_guide_path[i])
                 p[i] = p_copy[i];
-            else if (!env->goal_locations[i].empty())
-                p[i] = p[i]+1;
+            else 
+            {
+                if (!env->goal_locations[i].empty())
+                    p[i] = p[i]+1;
+                else
+                    p[i] = 0;
+            }
 
             // give priority bonus to the agent if the agent is in a deadend location
             if (!env->goal_locations[i].empty() && trajLNS.neighbors[env->curr_states[i].location].size() == 1){

@@ -209,11 +209,11 @@ void schedule_plan_flow(int time_limit, std::vector<int> & proposed_schedule,  S
     supply[source] = num_workers; // Source supplies workers
     supply[sink] = -num_workers;  // Sink absorbs tasks
 
-    // if (num_workers > num_tasks)
-    // {
-    //     supply[source] = num_tasks; // Source supplies tasks
-    //     supply[sink] = -num_tasks;  // Sink absorbs tasks
-    // }
+    if (num_workers > num_tasks + parking_locs.size())
+    {
+        supply[source] = num_tasks + parking_locs.size(); // Source supplies tasks
+        supply[sink] = -num_tasks + parking_locs.size();  // Sink absorbs tasks
+    }
 
     for (int i = 0; i < num_workers; ++i) supply[map_nodes[i]] = 0;
 
