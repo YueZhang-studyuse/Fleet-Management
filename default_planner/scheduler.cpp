@@ -244,7 +244,7 @@ void schedule_plan_flow(int time_limit, std::vector<int> & proposed_schedule,  S
         {
             ListDigraph::Arc a = g.addArc(map_nodes[loc], sink);
             node_to_task_id[lemon::ListDigraphBase::id(map_nodes[loc])] = loc;
-            capacity[a] = (num_workers - num_tasks); // allow multiple agents to be assigned to parking
+            capacity[a] = 1; // only one agent physically parking 
             cost[a] = 10000; //high cost to avoid using parking unless necessary
         }
     }
