@@ -35,6 +35,14 @@ void Entry::compute(int time_limit, std::vector<Action> & plan, std::vector<int>
         
         //call the planner to compute the actions
         planner->plan(time_limit,plan);
+        for (size_t i = 0; i < proposed_schedule.size(); i++)
+        {
+            if(proposed_schedule[i] <0)
+            {
+                proposed_schedule[i] = -1;
+                env->goal_locations[i].clear();
+            }
+        }
 
 }
 
@@ -50,7 +58,7 @@ void Entry::update_goal_locations(std::vector<int> & proposed_schedule)
         if (proposed_schedule[i] != -2)
             env->goal_locations[i].clear(); // not clear if the agent is assigned to parking task
         int t_id = proposed_schedule[i];
-        if (t_id == -1)
+        if (t_id == -1 || t_id == -2)
             continue;
 
         int i_loc = env->task_pool[t_id].idx_next_loc;

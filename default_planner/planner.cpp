@@ -196,7 +196,7 @@ namespace DefaultPlanner{
                 p[i] = p_copy[i];
             else 
             {
-                if (!env->goal_locations[i].empty())
+                if (!env->goal_locations[i].empty() && env->curr_task_schedule[i]>=0)
                     p[i] = p[i]+1;
                 else
                     p[i] = 0;

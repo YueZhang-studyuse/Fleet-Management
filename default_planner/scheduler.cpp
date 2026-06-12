@@ -39,7 +39,10 @@ void schedule_initialize(int preprocess_time_limit, SharedEnvironment* env)
     for (int loc = 0; loc < env->map.size(); loc++)
     {
         if (env->map[loc] == 2)
+        {
             parking_locs.push_back(loc);
+            cout<<"found parking loc: "<<loc<<endl;
+        }
     }
     return;
 }
@@ -501,8 +504,9 @@ void schedule_plan_flow_parking(SharedEnvironment* env, std::vector<int> & propo
                 path.push_back(ploc);
                 env->goal_locations[free_agent_ids[i]].push_back({ploc, env->curr_timestep}); // assign the parking location as a "task" for the agent to go to
                 proposed_schedule[free_agent_ids[i]] = -2; // not assigned to any real task, just go to parking
+                env->curr_task_schedule[free_agent_ids[i]] = -2;
                 agent_guide_path[free_agent_ids[i]]   = path;
-                //cout << "[parking] agent " << free_agent_ids[i] << " → parking loc " << ploc << endl;
+                cout << "[parking] agent " << free_agent_ids[i] << " → parking loc " << ploc << endl;
 
                 // Each parking spot can only hold one agent; remove once used
                 if (--parking_loc_capacity[ploc] <= 0)
