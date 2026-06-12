@@ -8,6 +8,7 @@ std::mt19937 mt;
 std::unordered_set<int> free_agents;
 std::unordered_set<int> free_tasks;
 std::vector<int> parking_locs; //store the parking locations in the map for later use in scheduling
+std::vector<int> free_agent_ids;
 
 unordered_map<int,list<int>> agent_guide_path; //agent id, guide path from flow
 
@@ -209,10 +210,10 @@ void schedule_plan_flow(int time_limit, std::vector<int> & proposed_schedule,  S
     supply[source] = num_workers; // Source supplies workers
     supply[sink] = -num_workers;  // Sink absorbs tasks
 
-    if (num_workers > num_tasks + parking_locs.size())
+    if (num_workers > num_tasks)
     {
-        supply[source] = num_tasks + parking_locs.size(); // Source supplies tasks
-        supply[sink] = -num_tasks + parking_locs.size();  // Sink absorbs tasks
+        supply[source] = num_tasks; // Source supplies tasks
+        supply[sink] = -num_tasks;  // Sink absorbs tasks
     }
 
     for (int i = 0; i < num_workers; ++i) supply[map_nodes[i]] = 0;
@@ -235,18 +236,6 @@ void schedule_plan_flow(int time_limit, std::vector<int> & proposed_schedule,  S
         node_to_task_id[lemon::ListDigraphBase::id(map_nodes[loc])] = loc;
         capacity[a] = task.second.size();
         cost[a] = 0;
-    }
-
-    // connect parking to sink for flexible agents that are not assigned to any opened task
-    if (num_tasks < num_workers)
-    {
-        for (int loc : parking_locs)
-        {
-            ListDigraph::Arc a = g.addArc(map_nodes[loc], sink);
-            node_to_task_id[lemon::ListDigraphBase::id(map_nodes[loc])] = loc;
-            capacity[a] = 1; // only one agent physically parking 
-            cost[a] = 10000; //high cost to avoid using parking unless necessary
-        }
     }
 
     vector<int> neighbor = {-env->cols, 1, env->cols, -1};
@@ -298,6 +287,8 @@ void schedule_plan_flow(int time_limit, std::vector<int> & proposed_schedule,  S
     ns.upperMap(capacity);
     ns.supplyMap(supply);
     ns.flowMap(flow); // Use the initial flow (warm start)
+
+    free_agent_ids.clear();
     
     if (ns.run() == NetworkSimplex<ListDigraph>::OPTIMAL) 
     {
@@ -345,36 +336,29 @@ void schedule_plan_flow(int time_limit, std::vector<int> & proposed_schedule,  S
             if (node_to_task_id.find(lemon::ListDigraphBase::id(current)) != node_to_task_id.end()) 
             {
                 int task_loc = node_to_task_id[lemon::ListDigraphBase::id(current)];
-                if (task_loc_ids.find(task_loc) == task_loc_ids.end()) // the task location is a parking location
+                int task_id = task_loc_ids[task_loc].front();
+                // node_to_task_id[current].pop_front();
+                path.push_back(task_loc);
+                //cout << "Worker " << flexible_agent_ids[i] << " is assigned to Task " << task_id  << " through intermediate nodes." << endl;
+                proposed_schedule[flexible_agent_ids[i]] = task_id;
+                if (use_traffic)
+                    agent_guide_path[flexible_agent_ids[i]] = path;
+                task_loc_ids[task_loc].pop_front();
+                if (task_loc_ids[task_loc].empty())
                 {
-                    proposed_schedule[flexible_agent_ids[i]] = -2; // assign a dummy task id for parking
-                    env->goal_locations[flexible_agent_ids[i]].clear(); // clear the agent's goal locations
-                    env->goal_locations[flexible_agent_ids[i]].push_back({task_loc, env->curr_timestep}); // assign the agent to go to parking location
-                    //cout<<"assigning agent "<<flexible_agent_ids[i]<<" to parking location "<<task_loc<<endl;
+                    task_loc_ids.erase(task_loc);
+                    node_to_task_id.erase(lemon::ListDigraphBase::id(current));
                 }
-                else
-                {
-                    int task_id = task_loc_ids[task_loc].front();
-                    // node_to_task_id[current].pop_front();
-                    path.push_back(task_loc);
-                    //cout << "Worker " << flexible_agent_ids[i] << " is assigned to Task " << task_id  << " through intermediate nodes." << endl;
-                    proposed_schedule[flexible_agent_ids[i]] = task_id;
-                    if (use_traffic)
-                        agent_guide_path[flexible_agent_ids[i]] = path;
-                    task_loc_ids[task_loc].pop_front();
-                    if (task_loc_ids[task_loc].empty())
-                    {
-                        task_loc_ids.erase(task_loc);
-                        node_to_task_id.erase(lemon::ListDigraphBase::id(current));
-                    }
-                }
+                cnt++;
             }
             else 
             {
                 proposed_schedule[flexible_agent_ids[i]] = -1;
+                free_agent_ids.push_back(flexible_agent_ids[i]);
                 //cout << "No solution found." << endl;
             }
         }
+        cout<< "Optimal assignment with minimum cost. Assigned " << cnt << " out of " << num_workers << " flexible agents." << endl;
     }
     else 
     {
@@ -385,6 +369,160 @@ void schedule_plan_flow(int time_limit, std::vector<int> & proposed_schedule,  S
     double elapsed_time = std::chrono::duration<double>(end_time - start_time).count();
     cout << "Solving time: " << elapsed_time << " seconds" << endl;
 
+}
+
+void schedule_plan_flow_parking(SharedEnvironment* env)
+{
+    auto start_time = std::chrono::high_resolution_clock::now();
+
+    agent_guide_path.clear();
+
+    int num_workers = free_agent_ids.size();
+    int num_tasks   = parking_locs.size();
+
+    cout << "[parking] num of agents: " << num_workers << endl;
+    cout << "[parking] num of parking locs: " << num_tasks << endl;
+
+    if (num_workers == 0 || num_tasks == 0)
+        return;
+
+    int effective = std::min(num_workers, num_tasks);
+
+    // Build the flow graph
+    ListDigraph g;
+    ListDigraph::NodeMap<int> supply(g);
+    ListDigraph::ArcMap<double> cost(g);
+    ListDigraph::ArcMap<int> capacity(g);
+    ListDigraph::ArcMap<int> flow(g);
+
+    vector<ListDigraph::Node> map_nodes(env->map.size());
+
+    ListDigraph::Node source = g.addNode();
+    ListDigraph::Node sink   = g.addNode();
+
+    unordered_map<int, int> node_to_maploc;
+    unordered_map<int, int> maploc_to_node;
+
+    for (int i = 0; i < (int)env->map.size(); ++i)
+    {
+        map_nodes[i] = g.addNode();
+        int id = lemon::ListDigraphBase::id(map_nodes[i]);
+        node_to_maploc[id] = i;
+        maploc_to_node[i]  = id;
+    }
+
+    supply[source] = effective;
+    supply[sink]   = -effective;
+    for (int i = 0; i < (int)env->map.size(); ++i) supply[map_nodes[i]] = 0;
+
+    // Source → agent start locations
+    for (int i = 0; i < num_workers; ++i)
+    {
+        ListDigraph::Arc a = g.addArc(source, map_nodes[env->curr_states[free_agent_ids[i]].location]);
+        capacity[a] = 1;
+        cost[a]     = 0;
+    }
+
+    // Parking nodes → sink; record which node maps to which parking loc
+    unordered_map<int, int> node_to_parking_loc; // graph node id → parking loc
+    unordered_map<int, int> parking_loc_capacity; // parking loc → remaining capacity
+    for (int ploc : parking_locs)
+    {
+        ListDigraph::Arc a = g.addArc(map_nodes[ploc], sink);
+        capacity[a] = 1;
+        cost[a]     = 0;
+        node_to_parking_loc[lemon::ListDigraphBase::id(map_nodes[ploc])] = ploc;
+        parking_loc_capacity[ploc] = 1;
+    }
+
+    // Map edges (cost = 1 per step)
+    vector<int> neighbor = {-env->cols, 1, env->cols, -1};
+    for (int loc = 0; loc < (int)env->map.size(); loc++)
+    {
+        if (env->map[loc] == 1) continue;
+        for (int d = 0; d < 4; d++)
+        {
+            int nloc = loc + neighbor[d];
+            if (nloc < 0 || nloc >= (int)env->map.size() || env->map[nloc] == 1)
+                continue;
+            ListDigraph::Arc a = g.addArc(map_nodes[loc], map_nodes[nloc]);
+            cost[a]     = 1;
+            capacity[a] = num_workers;
+        }
+    }
+
+    // Solve
+    NetworkSimplex<ListDigraph> ns(g);
+    ns.costMap(cost);
+    ns.upperMap(capacity);
+    ns.supplyMap(supply);
+    ns.flowMap(flow);
+
+    if (ns.run() == NetworkSimplex<ListDigraph>::OPTIMAL)
+    {
+        unordered_map<int,int> edge_flows;
+        int parking_cnt = 0;
+
+        for (int i = 0; i < num_workers; i++)
+        {
+            ListDigraph::Node current = map_nodes[env->curr_states[free_agent_ids[i]].location];
+
+            list<int> path;
+
+            while (node_to_parking_loc.find(lemon::ListDigraphBase::id(current)) == node_to_parking_loc.end())
+            {
+                if (current == sink) break;
+
+                int loc = node_to_maploc[lemon::ListDigraphBase::id(current)];
+                path.push_back(loc);
+
+                bool found = false;
+                for (ListDigraph::OutArcIt arc(g, current); arc != INVALID; ++arc)
+                {
+                    if (ns.flow(arc) > 0)
+                    {
+                        int arc_id = lemon::ListDigraphBase::id(arc);
+                        if (edge_flows.find(arc_id) == edge_flows.end())
+                            edge_flows[arc_id] = ns.flow(arc);
+                        if (edge_flows[arc_id] <= 0)
+                            continue;
+                        current = g.target(arc);
+                        edge_flows[arc_id]--;
+                        found = true;
+                        break;
+                    }
+                }
+                if (!found) break;
+            }
+
+            if (node_to_parking_loc.find(lemon::ListDigraphBase::id(current)) != node_to_parking_loc.end())
+            {
+                int ploc = node_to_parking_loc[lemon::ListDigraphBase::id(current)];
+                path.push_back(ploc);
+                env->goal_locations[free_agent_ids[i]].push_back({ploc, env->curr_timestep}); // assign the parking location as a "task" for the agent to go to
+                agent_guide_path[free_agent_ids[i]]   = path;
+                //cout << "[parking] agent " << free_agent_ids[i] << " → parking loc " << ploc << endl;
+
+                // Each parking spot can only hold one agent; remove once used
+                if (--parking_loc_capacity[ploc] <= 0)
+                    node_to_parking_loc.erase(lemon::ListDigraphBase::id(current));
+                parking_cnt++;
+            }
+            // else
+            // {
+            //     cout << "[parking] agent " << free_agent_ids[i] << " could not be assigned a parking loc" << endl;
+            // }
+        }
+        cout << "[parking] Optimal assignment with minimum cost. Assigned " << parking_cnt << " out of " << num_workers << " free agents to parking locations." << endl;
+    }
+    else
+    {
+        cout << "[parking] No optimal solution found." << endl;
+    }
+
+    auto end_time = std::chrono::high_resolution_clock::now();
+    double elapsed_time = std::chrono::duration<double>(end_time - start_time).count();
+    cout << "[parking] Solving time: " << elapsed_time << " seconds" << endl;
 }
 
 void schedule_plan_flow_hist(int time_limit, std::vector<int> & proposed_schedule,  SharedEnvironment* env, std::vector<pair<double,double>>& background_flow, bool new_only)
