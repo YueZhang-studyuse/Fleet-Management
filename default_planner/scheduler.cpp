@@ -371,7 +371,7 @@ void schedule_plan_flow(int time_limit, std::vector<int> & proposed_schedule,  S
 
 }
 
-void schedule_plan_flow_parking(SharedEnvironment* env)
+void schedule_plan_flow_parking(SharedEnvironment* env, std::vector<int> & proposed_schedule)
 {
     auto start_time = std::chrono::high_resolution_clock::now();
 
@@ -500,6 +500,7 @@ void schedule_plan_flow_parking(SharedEnvironment* env)
                 int ploc = node_to_parking_loc[lemon::ListDigraphBase::id(current)];
                 path.push_back(ploc);
                 env->goal_locations[free_agent_ids[i]].push_back({ploc, env->curr_timestep}); // assign the parking location as a "task" for the agent to go to
+                proposed_schedule[free_agent_ids[i]] = -2; // not assigned to any real task, just go to parking
                 agent_guide_path[free_agent_ids[i]]   = path;
                 //cout << "[parking] agent " << free_agent_ids[i] << " → parking loc " << ploc << endl;
 
