@@ -116,10 +116,15 @@ void frank_wolfe(TrajLNS& lns,std::unordered_set<int>& updated, TimePoint timeli
 
     int count=0;
     int a, index;
-    while (std::chrono::steady_clock::now() < timelimit){
+    while (std::chrono::steady_clock::now() < timelimit)
+    {
         index = count%lns.env->num_of_agents;
         a = replan_order[index].id;
         count++;
+        if (lns.env->goal_locations[a].empty())
+        {
+            continue;
+        }
         if (lns.traj_dists[a].empty() || lns.trajs[a].empty()){
             continue;
         }

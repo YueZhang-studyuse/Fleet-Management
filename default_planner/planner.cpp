@@ -154,7 +154,16 @@ namespace DefaultPlanner{
             {
                 //first set to the current location
                 trajLNS.tasks[i] = env->curr_states[i].location;
-                p[i] = 0
+                //set the pririty to 0
+                p[i] = 0;
+                //remove the trajectory of the agent 
+                if (!trajLNS.trajs[i].empty())
+                    remove_traj(trajLNS, i);
+                //add its current position as the trajectory of the agent
+                trajLNS.trajs[i].clear();
+                trajLNS.trajs[i].push_back(env->curr_states[i].location);
+                add_traj(trajLNS,i);
+                update_dist_2_path(trajLNS,i);
             }
             else
             {
