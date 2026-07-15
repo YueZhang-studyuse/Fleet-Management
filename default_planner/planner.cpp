@@ -125,15 +125,6 @@ namespace DefaultPlanner{
         TimePoint end_time = start_time + std::chrono::milliseconds(time_limit - pibt_time - TRAFFIC_FLOW_ASSIGNMENT_END_TIME_TOLERANCE); 
         cout << "plan limit " << time_limit <<endl;
 
-        // recrod the initial location of each agent as dummy goals in case no goal is assigned to the agent.
-        if (env->curr_timestep == 0){
-            dummy_goals.resize(env->num_of_agents);
-            for(int i=0; i<env->num_of_agents; i++)
-            {
-                dummy_goals.at(i) = env->curr_states.at(i).location;
-            }
-        }
-
         // data sturcture for record the previous decision of each agent
         prev_decision.clear();
         prev_decision.resize(env->map.size(), -1);
@@ -143,7 +134,8 @@ namespace DefaultPlanner{
         for(int i=0; i<env->num_of_agents; i++)
         {
             //initialise the shortest distance heuristic table for the goal location of the agent
-            if ( ( std::chrono::steady_clock::now() < end_time) ){
+            if ( ( std::chrono::steady_clock::now() < end_time) )
+            {
                 for(int j=0; j<env->goal_locations[i].size(); j++)
                 {
                     int goal_loc = env->goal_locations[i][j].first;
@@ -153,53 +145,32 @@ namespace DefaultPlanner{
                         }
                 }
             }
-            
-
-            // set the goal location of each agent
-            if (env->goal_locations[i].empty()){
-                trajLNS.tasks[i] = dummy_goals.at(i);
-                p[i] = p_copy[i];
-            }
-            else{
-                trajLNS.tasks[i] = env->goal_locations[i].front().first;
-            }
 
             // check if the agent need a guide path update, when the agent has no guide path or the guide path does not end at the goal location
             require_guide_path[i] = false;
-
-            if (trajLNS.trajs[i].empty() || trajLNS.trajs[i].back() != trajLNS.tasks[i])
-            {
-                require_guide_path[i] = true;
-            }
             
-            // check if the agent completed the action in the previous timestep
-            // if not, the agent is till turning towards the action direction, we do not need to plan new action for the agent
-            assert(env->curr_states[i].location >=0);
-            prev_states[i] = env->curr_states[i];
-            next_states[i] = State();
-            prev_decision[env->curr_states[i].location] = i; 
-            if (decided[i].loc == -1){
-                decided[i].loc = env->curr_states[i].location;
-                assert(decided[i].state == DONE::DONE);
+            // set the goal location of each agent
+            if (env->goal_locations[i].empty())
+            {
+                //first set to the current location
+                trajLNS.tasks[i] = env->curr_states[i].location;
+                p[i] = 0
             }
-            // if (prev_states[i].location == decided[i].loc){
-            //     decided[i].state = DONE::DONE;
-            // }
-            // if (decided[i].state == DONE::NOT_DONE){
-            //     decision.at(decided[i].loc) = i;
-            //     next_states[i] = State(decided[i].loc,-1,-1);
-            // }
-            decided[i].state = DONE::DONE;
-
-            // reset the pibt priority if the agent reached prvious goal location and switch to new goal location
-            if(require_guide_path[i])
-                p[i] = p_copy[i];
-            else if (!env->goal_locations[i].empty())
-                p[i] = p[i]+1;
-
-            // give priority bonus to the agent if the agent is in a deadend location
-            if (!env->goal_locations[i].empty() && trajLNS.neighbors[env->curr_states[i].location].size() == 1){
-                p[i] = p[i] + 10;
+            else
+            {
+                trajLNS.tasks[i] = env->goal_locations[i].front().first;
+                if (trajLNS.trajs[i].empty() || trajLNS.trajs[i].back() != trajLNS.tasks[i])
+                {
+                    require_guide_path[i] = true;
+                    p[i] = p_copy[i];
+                }
+                else
+                {
+                    p[i] = p[i]+1;
+                }
+                if (trajLNS.neighbors[env->curr_states[i].location].size() == 1){
+                    p[i] = p[i] + 10;
+                }
             }
             
         }
