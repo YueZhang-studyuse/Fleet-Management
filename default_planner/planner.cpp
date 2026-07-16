@@ -128,6 +128,8 @@ namespace DefaultPlanner{
         // data sturcture for record the previous decision of each agent
         prev_decision.clear();
         prev_decision.resize(env->map.size(), -1);
+        decision.clear();
+        decision.resize(env->map.size(), -1);
 
         // update the status of each agent and prepare for planning
         int count = 0;
@@ -145,6 +147,10 @@ namespace DefaultPlanner{
                         }
                 }
             }
+
+            prev_states[i] = env->curr_states[i];
+            next_states[i] = State();
+            prev_decision[env->curr_states[i].location] = i; 
 
             // check if the agent need a guide path update, when the agent has no guide path or the guide path does not end at the goal location
             require_guide_path[i] = false;
@@ -224,9 +230,6 @@ namespace DefaultPlanner{
         //pibt
         for (int i : ids)
         {
-            // if (decided[i].state == DONE::NOT_DONE){
-            //     continue;
-            // }
             if (next_states[i].location==-1)
             {
                 assert(prev_states[i].location >=0 && prev_states[i].location < env->map.size());
@@ -240,29 +243,10 @@ namespace DefaultPlanner{
         actions.resize(env->num_of_agents);
         for (int id : ids)
         {
-            //clear the decision table based on which agent has next_states
-            if (next_states.at(id).location!= -1)
-                decision.at(next_states.at(id).location) = -1;
-
-            if (next_states.at(id).location >=0)
-            {
-                decided.at(id) = DCR({next_states.at(id).location,DONE::NOT_DONE});
-            }
-
             // post process the targeted next location to turning or moving actions
-            actions.at(id) = getAction(prev_states.at(id),decided.at(id).loc, env);
-            checked.at(id) = false;
+            actions.at(id) = getAction(prev_states.at(id),next_states.at(id).location, env);
 
         }
-
-        // for (int id=0;id < env->num_of_agents ; id++){
-        //     if (!checked.at(id) && actions.at(id) == Action::FW){
-        //         moveCheck(id,checked,decided,actions,prev_decision);
-        //     }
-        // }
-
-
-
         prev_states = next_states;
         return;
 

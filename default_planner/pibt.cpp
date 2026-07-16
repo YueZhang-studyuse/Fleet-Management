@@ -27,7 +27,6 @@ bool causalPIBT(int curr_id, int higher_id,std::vector<State>& prev_states,
       std::vector<int>& prev_decision, std::vector<int>& decision, 
 	  std::vector<bool>& occupied, TrajLNS& lns)
 	  {
-	// The PIBT works like a causal PIBT when using MAPF-T model. But a normal PIBT when using MAPF model.
 	
 	assert(next_states[curr_id].location == -1);
     int prev_loc = prev_states[curr_id].location;
@@ -43,42 +42,63 @@ bool causalPIBT(int curr_id, int higher_id,std::vector<State>& prev_states,
 	std::vector<int> neighbors;
 	std::vector<PIBT_C> successors;
 	getNeighborLocs(&(lns.neighbors),neighbors,prev_loc);
-	for (auto& neighbor: neighbors)
+	
+	//use regular guid path heuristic for agent that has goal
+	if (!lns.env->goal_locations[curr_id].empty())
 	{
+		for (auto& neighbor: neighbors)
+		{
 
-		assert(validateMove(prev_loc, neighbor, lns.env));
+			assert(validateMove(prev_loc, neighbor, lns.env));
 
-		int min_heuristic = get_gp_h(lns, curr_id, neighbor);
+			int min_heuristic = get_gp_h(lns, curr_id, neighbor);
 
-		successors.emplace_back(neighbor,min_heuristic,-1,rand());
+			successors.emplace_back(neighbor,min_heuristic,0,rand());
+		}
+
+		int wait_heuristic = get_gp_h(lns, curr_id, prev_loc);
+
+		successors.emplace_back(prev_loc, wait_heuristic,0,rand());
 	}
+	else //evaluate where to push based on interference with other agents, for agent that has no goal
+	//initial attempt: only check current cell
+	{
+		for (auto& neighbor: neighbors)
+		{
+			assert(validateMove(prev_loc, neighbor, lns.env));
 
-	int wait_heuristic = get_gp_h(lns, curr_id, prev_loc);
+			int min_heuristic = 0;
+			if (prev_decision[neighbor] != -1 && prev_decision[neighbor] != curr_id) //already occupied by other agent
+				min_heuristic = 1;
 
-	successors.emplace_back(prev_loc, wait_heuristic,-1,rand());
+			successors.emplace_back(neighbor,min_heuristic,0,rand());
+		}
+
+		int wait_heuristic = 0;
+		if (decision[prev_loc] != -1) //other agent want to occupy
+			wait_heuristic = 1;
+
+		successors.emplace_back(prev_loc, wait_heuristic,0,rand());
+	}
 
 
 	std::sort(successors.begin(), successors.end(), 
 		[&](PIBT_C& a, PIBT_C& b)
 		{
-			// int diff[4] = {1,lns.env->cols,-1,-lns.env->cols};
-			if (a.heuristic == b.heuristic){
-					//tie break on prefer moving forward
-					// if (a.location==orien_next_v && b.location!=orien_next_v)
-					// 	return true;
-					// if (a.location!=orien_next_v && b.location==orien_next_v)
-					// 	return false;
+			if (a.heuristic == b.heuristic)
+			{
+				if (a.secondary_heuristic == b.secondary_heuristic)
+				{
 					// random tie break
 					return a.tie_breaker < b.tie_breaker;
+				}
+				return a.secondary_heuristic < b.secondary_heuristic;
 			}
 			return a.heuristic < b.heuristic; 
 		});
 
     for (auto& next: successors)
 	{
-		// if(occupied[next.location])
-		// 	continue;
-		// assert(validateMove(prev_loc, next.location, lns.env));
 		
 		if (next.location == -1)
 			continue;
@@ -112,22 +132,6 @@ bool causalPIBT(int curr_id, int higher_id,std::vector<State>& prev_states,
     return false;
 }
 
-// Action getAction(State& prev, State& next){
-// 	if (prev.location == next.location && prev.orientation == next.orientation){
-// 		return Action::W;
-// 	}
-// 	if (prev.location != next.location && prev.orientation == next.orientation){
-// 		return Action::FW;
-// 	}
-// 	if (next.orientation  == (prev.orientation+1)%4){
-// 		return Action::CR;
-// 	}
-// 	if (next.orientation  == (prev.orientation+3)%4){
-// 		return Action::CCR;
-// 	}
-// 	assert(false);
-// 	return Action::W;
-// }
 
 Action getAction(State& prev, int next_loc, SharedEnvironment* env)
 {
@@ -144,34 +148,5 @@ Action getAction(State& prev, int next_loc, SharedEnvironment* env)
 		return Action::N;
 
 }
-
-// bool moveCheck(int id, std::vector<bool>& checked,
-// 		std::vector<DCR>& decided, std::vector<Action>& actions, std::vector<int>& prev_decision){
-// 	if (checked.at(id) && actions.at(id) == Action::FW)
-// 		return true;
-// 	checked.at(id) = true;
-
-// 	if (actions.at(id) != Action::FW)
-// 		return false;
-
-// 	//move forward
-// 	int target = decided.at(id).loc;
-// 	assert(target != -1);
-
-// 	int na = prev_decision[target];
-// 	if (na == -1)
-// 		return true;
-
-// 	if (moveCheck(na,checked,decided,actions,prev_decision))
-// 		return true;
-// 	actions.at(id) = Action::W;
-// 	return false;
-	
-
-	
-
-	
-	
-//}
 
 }

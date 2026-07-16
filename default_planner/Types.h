@@ -46,12 +46,12 @@ namespace DefaultPlanner{
 	struct PIBT_C{
 		int location;
 		int heuristic;
-		int orientation;  // 0:east, 1:south, 2:west, 3:north
+		int secondary_heuristic;
 		int tie_breaker;
 
 		//constructor
-		PIBT_C(int location, int heuristic, int orientation, int tie_breaker):
-			location(location), heuristic(heuristic), orientation(orientation), tie_breaker(tie_breaker) {};
+		PIBT_C(int location, int heuristic, int secondary_heuristic, int tie_breaker):
+			location(location), heuristic(heuristic), secondary_heuristic(secondary_heuristic), tie_breaker(tie_breaker) {};
 	};
 
 	struct HNode
