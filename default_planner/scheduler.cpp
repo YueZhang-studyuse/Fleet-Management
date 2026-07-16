@@ -13,7 +13,9 @@ std::mt19937 mt;
 std::unordered_set<int> free_agents;
 std::unordered_set<int> free_tasks;
 std::vector<std::tuple<int,int>> map_clearance;
-std::vector<int> sorted_agent_ids_by_clearance;
+std::vector<int> sorted_cell_ids_by_clearance;
+std::vector<int> sorted_cell_clearance_level_indices;
+std::vector<int> sorted_cell_clearance_levels;
 
 unordered_map<int,list<int>> agent_guide_path; //agent id, guide path from flow
 
@@ -34,6 +36,63 @@ struct Node
         }
     };  // used by OPEN (heap) to compare nodes (top of the heap has min f-val, and then highest g-val)
 };
+
+static void refresh_sorted_cells_by_clearance(const SharedEnvironment* env)
+{
+    const int map_size = static_cast<int>(env->map.size());
+
+    sorted_cell_ids_by_clearance.resize(map_size);
+    std::iota(sorted_cell_ids_by_clearance.begin(), sorted_cell_ids_by_clearance.end(), 0);
+    std::sort(sorted_cell_ids_by_clearance.begin(), sorted_cell_ids_by_clearance.end(),
+              [&](int a, int b)
+              {
+                  auto clearance_a = (a >= 0 && a < map_size) ? map_clearance[a] : std::make_tuple(-1, std::numeric_limits<int>::max());
+                  auto clearance_b = (b >= 0 && b < map_size) ? map_clearance[b] : std::make_tuple(-1, std::numeric_limits<int>::max());
+
+                  if (std::get<0>(clearance_a) != std::get<0>(clearance_b))
+                      return std::get<0>(clearance_a) > std::get<0>(clearance_b);
+                  if (std::get<1>(clearance_a) != std::get<1>(clearance_b))
+                      return std::get<1>(clearance_a) < std::get<1>(clearance_b);
+                  return a < b;
+              });
+
+    sorted_cell_clearance_level_indices.clear();
+    sorted_cell_clearance_levels.clear();
+    int max_clearance = -1;
+    int min_clearance = -1;
+    if (!sorted_cell_ids_by_clearance.empty())
+    {
+        int top_cell = sorted_cell_ids_by_clearance.front();
+        if (top_cell >= 0 && top_cell < map_size)
+            max_clearance = std::get<0>(map_clearance[top_cell]);
+
+        int last_cell = sorted_cell_ids_by_clearance.back();
+        if (last_cell >= 0 && last_cell < map_size)
+            min_clearance = std::get<0>(map_clearance[last_cell]);
+    }
+
+    auto find_first_index_for_clearance = [&](int target_clearance) -> int
+    {
+        for (int idx = 0; idx < static_cast<int>(sorted_cell_ids_by_clearance.size()); ++idx)
+        {
+            int cell_id = sorted_cell_ids_by_clearance[idx];
+            if (cell_id < 0 || cell_id >= map_size)
+                continue;
+            if (std::get<0>(map_clearance[cell_id]) == target_clearance)
+                return idx;
+        }
+        return -1;
+    };
+
+    if (max_clearance >= 0 && min_clearance >= 0)
+    {
+        for (int c = max_clearance; c >= min_clearance; --c)
+        {
+            sorted_cell_clearance_levels.push_back(c);
+            sorted_cell_clearance_level_indices.push_back(find_first_index_for_clearance(c));
+        }
+    }
+}
 
 void schedule_initialize(int preprocess_time_limit, SharedEnvironment* env)
 {
@@ -126,24 +185,7 @@ void schedule_initialize(int preprocess_time_limit, SharedEnvironment* env)
         map_clearance[loc] = std::make_tuple(clearance, obstacle_count);
     }
 
-    const int num_agents = static_cast<int>(env->curr_states.size());
-    sorted_agent_ids_by_clearance.resize(num_agents);
-    std::iota(sorted_agent_ids_by_clearance.begin(), sorted_agent_ids_by_clearance.end(), 0);
-    std::sort(sorted_agent_ids_by_clearance.begin(), sorted_agent_ids_by_clearance.end(),
-              [&](int a, int b)
-              {
-                  int loc_a = env->curr_states[a].location;
-                  int loc_b = env->curr_states[b].location;
-
-                  auto clearance_a = (loc_a >= 0 && loc_a < map_size) ? map_clearance[loc_a] : std::make_tuple(-1, std::numeric_limits<int>::max());
-                  auto clearance_b = (loc_b >= 0 && loc_b < map_size) ? map_clearance[loc_b] : std::make_tuple(-1, std::numeric_limits<int>::max());
-
-                  if (std::get<0>(clearance_a) != std::get<0>(clearance_b))
-                      return std::get<0>(clearance_a) > std::get<0>(clearance_b);
-                  if (std::get<1>(clearance_a) != std::get<1>(clearance_b))
-                      return std::get<1>(clearance_a) < std::get<1>(clearance_b);
-                  return a < b;
-              });
+    refresh_sorted_cells_by_clearance(env);
 
     cout << "[DEBUG] Clearance table:" << endl;
     for (int r = 0; r < rows; ++r)
@@ -156,12 +198,18 @@ void schedule_initialize(int preprocess_time_limit, SharedEnvironment* env)
         cout << endl;
     }
 
-    cout << "[DEBUG] Agents sorted by clearance (high->low): ";
-    for (int agent_id : sorted_agent_ids_by_clearance)
+    cout << "[DEBUG] Cells sorted by clearance (high->low): ";
+    for (int cell_id : sorted_cell_ids_by_clearance)
     {
-        int loc = env->curr_states[agent_id].location;
-        auto clearance = (loc >= 0 && loc < map_size) ? map_clearance[loc] : std::make_tuple(-1, -1);
-        cout << agent_id << "(" << std::get<0>(clearance) << "," << std::get<1>(clearance) << ") ";
+        auto clearance = (cell_id >= 0 && cell_id < map_size) ? map_clearance[cell_id] : std::make_tuple(-1, -1);
+        cout << cell_id << "(" << std::get<0>(clearance) << "," << std::get<1>(clearance) << ") ";
+    }
+    cout << endl;
+
+    cout << "[DEBUG] Clearance-index in sorted cells from max to min: ";
+    for (int i = 0; i < static_cast<int>(sorted_cell_clearance_levels.size()); ++i)
+    {
+        cout << "[" << sorted_cell_clearance_levels[i] << "->" << sorted_cell_clearance_level_indices[i] << "] ";
     }
     cout << endl;
     return;
@@ -769,9 +817,9 @@ const std::vector<std::tuple<int,int>>& get_map_clearance()
     return map_clearance;
 }
 
-const std::vector<int>& get_sorted_agent_ids_by_clearance()
+const std::vector<int>& get_sorted_cell_ids_by_clearance()
 {
-    return sorted_agent_ids_by_clearance;
+    return sorted_cell_ids_by_clearance;
 }
 
 };

@@ -139,39 +139,19 @@ namespace DefaultPlanner{
         {
             dummy_goals.assign(env->num_of_agents, -1);
 
-            const std::vector<std::tuple<int,int>>& map_clearance = get_map_clearance();
-            const std::vector<int>& sorted_agents = get_sorted_agent_ids_by_clearance();
+            const std::vector<int>& sorted_cells = get_sorted_cell_ids_by_clearance();
 
             std::vector<int> traversable_cells;
             traversable_cells.reserve(env->map.size());
-            for (int loc = 0; loc < env->map.size(); ++loc)
+            for (int loc : sorted_cells)
             {
-                if (env->map[loc] != 1)
+                if (loc >= 0 && loc < env->map.size() && env->map[loc] != 1)
                     traversable_cells.push_back(loc);
             }
 
-            std::sort(traversable_cells.begin(), traversable_cells.end(),
-                      [&](int a, int b)
-                      {
-                          auto clearance_a = (a >= 0 && a < static_cast<int>(map_clearance.size())) ? map_clearance[a] : std::make_tuple(-1, std::numeric_limits<int>::max());
-                          auto clearance_b = (b >= 0 && b < static_cast<int>(map_clearance.size())) ? map_clearance[b] : std::make_tuple(-1, std::numeric_limits<int>::max());
-                          if (std::get<0>(clearance_a) != std::get<0>(clearance_b))
-                              return std::get<0>(clearance_a) > std::get<0>(clearance_b);
-                          if (std::get<1>(clearance_a) != std::get<1>(clearance_b))
-                              return std::get<1>(clearance_a) < std::get<1>(clearance_b);
-                          return a < b;
-                      });
-
             std::vector<int> agent_order;
-            if (sorted_agents.size() == static_cast<size_t>(env->num_of_agents))
-            {
-                agent_order = sorted_agents;
-            }
-            else
-            {
-                agent_order.resize(env->num_of_agents);
-                std::iota(agent_order.begin(), agent_order.end(), 0);
-            }
+            agent_order.resize(env->num_of_agents);
+            std::iota(agent_order.begin(), agent_order.end(), 0);
 
             std::vector<bool> goal_used(env->map.size(), false);
             int cell_ptr = 0;

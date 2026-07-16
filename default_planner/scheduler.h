@@ -30,7 +30,7 @@ bool isTaskNode(ListDigraph::Node node, ListDigraph& g, ListDigraph::Node sink);
 
 unordered_map<int,list<int>> get_guide_path();
 const std::vector<std::tuple<int,int>>& get_map_clearance();
-const std::vector<int>& get_sorted_agent_ids_by_clearance();
+const std::vector<int>& get_sorted_cell_ids_by_clearance();
 
 }
 
