@@ -5,13 +5,14 @@
 #include <limits>
 #include <numeric>
 #include <queue>
+#include <tuple>
 
 namespace DefaultPlanner{
 
 std::mt19937 mt;
 std::unordered_set<int> free_agents;
 std::unordered_set<int> free_tasks;
-std::vector<int> map_clearance;
+std::vector<std::tuple<int,int>> map_clearance;
 std::vector<int> sorted_agent_ids_by_clearance;
 
 unordered_map<int,list<int>> agent_guide_path; //agent id, guide path from flow
@@ -41,14 +42,14 @@ void schedule_initialize(int preprocess_time_limit, SharedEnvironment* env)
     mt.seed(0);
 
     const int map_size = static_cast<int>(env->map.size());
-    map_clearance.assign(map_size, std::numeric_limits<int>::max());
+    std::vector<int> clearance_distance(map_size, std::numeric_limits<int>::max());
 
     std::queue<int> q;
     for (int loc = 0; loc < map_size; ++loc)
     {
         if (env->map[loc] == 1)
         {
-            map_clearance[loc] = 0;
+            clearance_distance[loc] = 0;
             q.push(loc);
         }
     }
@@ -60,7 +61,7 @@ void schedule_initialize(int preprocess_time_limit, SharedEnvironment* env)
 
     if (q.empty())
     {
-        map_clearance.assign(map_size, rows + cols);
+        clearance_distance.assign(map_size, rows + cols);
     }
     else
     {
@@ -81,13 +82,48 @@ void schedule_initialize(int preprocess_time_limit, SharedEnvironment* env)
 
                 int next = nr * cols + nc;
 
-                if (map_clearance[next] > map_clearance[current] + 1)
+                if (clearance_distance[next] > clearance_distance[current] + 1)
                 {
-                    map_clearance[next] = map_clearance[current] + 1;
+                    clearance_distance[next] = clearance_distance[current] + 1;
                     q.push(next);
                 }
             }
         }
+    }
+
+    std::vector<int> obstacle_prefix((rows + 1) * (cols + 1), 0);
+    auto pref = [&](int r, int c) -> int&
+    {
+        return obstacle_prefix[r * (cols + 1) + c];
+    };
+
+    for (int r = 0; r < rows; ++r)
+    {
+        for (int c = 0; c < cols; ++c)
+        {
+            int loc = r * cols + c;
+            int obstacle = (env->map[loc] == 1) ? 1 : 0;
+            pref(r + 1, c + 1) = obstacle + pref(r, c + 1) + pref(r + 1, c) - pref(r, c);
+        }
+    }
+
+    map_clearance.assign(map_size, std::make_tuple(0, 0));
+    for (int loc = 0; loc < map_size; ++loc)
+    {
+        int clearance = clearance_distance[loc];
+        int r = loc / cols;
+        int c = loc % cols;
+        int top = std::max(0, r - clearance);
+        int bottom = std::min(rows - 1, r + clearance);
+        int left = std::max(0, c - clearance);
+        int right = std::min(cols - 1, c + clearance);
+
+        int obstacle_count = pref(bottom + 1, right + 1)
+                           - pref(top, right + 1)
+                           - pref(bottom + 1, left)
+                           + pref(top, left);
+
+        map_clearance[loc] = std::make_tuple(clearance, obstacle_count);
     }
 
     const int num_agents = static_cast<int>(env->curr_states.size());
@@ -99,11 +135,13 @@ void schedule_initialize(int preprocess_time_limit, SharedEnvironment* env)
                   int loc_a = env->curr_states[a].location;
                   int loc_b = env->curr_states[b].location;
 
-                  int clearance_a = (loc_a >= 0 && loc_a < map_size) ? map_clearance[loc_a] : -1;
-                  int clearance_b = (loc_b >= 0 && loc_b < map_size) ? map_clearance[loc_b] : -1;
+                  auto clearance_a = (loc_a >= 0 && loc_a < map_size) ? map_clearance[loc_a] : std::make_tuple(-1, std::numeric_limits<int>::max());
+                  auto clearance_b = (loc_b >= 0 && loc_b < map_size) ? map_clearance[loc_b] : std::make_tuple(-1, std::numeric_limits<int>::max());
 
-                  if (clearance_a != clearance_b)
-                      return clearance_a > clearance_b;
+                  if (std::get<0>(clearance_a) != std::get<0>(clearance_b))
+                      return std::get<0>(clearance_a) > std::get<0>(clearance_b);
+                  if (std::get<1>(clearance_a) != std::get<1>(clearance_b))
+                      return std::get<1>(clearance_a) < std::get<1>(clearance_b);
                   return a < b;
               });
 
@@ -113,7 +151,7 @@ void schedule_initialize(int preprocess_time_limit, SharedEnvironment* env)
         for (int c = 0; c < cols; ++c)
         {
             int loc = r * cols + c;
-            cout << map_clearance[loc] << " ";
+            cout << std::get<0>(map_clearance[loc]) << "(" << std::get<1>(map_clearance[loc]) << ") ";
         }
         cout << endl;
     }
@@ -122,8 +160,8 @@ void schedule_initialize(int preprocess_time_limit, SharedEnvironment* env)
     for (int agent_id : sorted_agent_ids_by_clearance)
     {
         int loc = env->curr_states[agent_id].location;
-        int clearance = (loc >= 0 && loc < map_size) ? map_clearance[loc] : -1;
-        cout << agent_id << "(" << clearance << ") ";
+        auto clearance = (loc >= 0 && loc < map_size) ? map_clearance[loc] : std::make_tuple(-1, -1);
+        cout << agent_id << "(" << std::get<0>(clearance) << "," << std::get<1>(clearance) << ") ";
     }
     cout << endl;
     return;
@@ -726,7 +764,7 @@ unordered_map<int,list<int>> get_guide_path()
     return agent_guide_path; 
 }
 
-const std::vector<int>& get_map_clearance()
+const std::vector<std::tuple<int,int>>& get_map_clearance()
 {
     return map_clearance;
 }

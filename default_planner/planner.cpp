@@ -6,6 +6,8 @@
 #include "const.h"
 #include "scheduler.h"
 #include <numeric>
+#include <limits>
+#include <tuple>
 
 
 namespace DefaultPlanner{
@@ -137,7 +139,7 @@ namespace DefaultPlanner{
         {
             dummy_goals.assign(env->num_of_agents, -1);
 
-            const std::vector<int>& map_clearance = get_map_clearance();
+            const std::vector<std::tuple<int,int>>& map_clearance = get_map_clearance();
             const std::vector<int>& sorted_agents = get_sorted_agent_ids_by_clearance();
 
             std::vector<int> traversable_cells;
@@ -151,10 +153,12 @@ namespace DefaultPlanner{
             std::sort(traversable_cells.begin(), traversable_cells.end(),
                       [&](int a, int b)
                       {
-                          int clearance_a = (a >= 0 && a < map_clearance.size()) ? map_clearance[a] : -1;
-                          int clearance_b = (b >= 0 && b < map_clearance.size()) ? map_clearance[b] : -1;
-                          if (clearance_a != clearance_b)
-                              return clearance_a > clearance_b;
+                          auto clearance_a = (a >= 0 && a < static_cast<int>(map_clearance.size())) ? map_clearance[a] : std::make_tuple(-1, std::numeric_limits<int>::max());
+                          auto clearance_b = (b >= 0 && b < static_cast<int>(map_clearance.size())) ? map_clearance[b] : std::make_tuple(-1, std::numeric_limits<int>::max());
+                          if (std::get<0>(clearance_a) != std::get<0>(clearance_b))
+                              return std::get<0>(clearance_a) > std::get<0>(clearance_b);
+                          if (std::get<1>(clearance_a) != std::get<1>(clearance_b))
+                              return std::get<1>(clearance_a) < std::get<1>(clearance_b);
                           return a < b;
                       });
 
