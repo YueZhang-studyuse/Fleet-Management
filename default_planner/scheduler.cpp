@@ -1,12 +1,18 @@
 #include "scheduler.h"
 // #include "gurobi_c++.h"
+#include <algorithm>
 #include <boost/heap/pairing_heap.hpp>
+#include <limits>
+#include <numeric>
+#include <queue>
 
 namespace DefaultPlanner{
 
 std::mt19937 mt;
 std::unordered_set<int> free_agents;
 std::unordered_set<int> free_tasks;
+std::vector<int> map_clearance;
+std::vector<int> sorted_agent_ids_by_clearance;
 
 unordered_map<int,list<int>> agent_guide_path; //agent id, guide path from flow
 
@@ -33,6 +39,93 @@ void schedule_initialize(int preprocess_time_limit, SharedEnvironment* env)
     // cout<<"schedule initialise limit" << preprocess_time_limit<<endl;
     DefaultPlanner::init_heuristics(env);
     mt.seed(0);
+
+    const int map_size = static_cast<int>(env->map.size());
+    map_clearance.assign(map_size, std::numeric_limits<int>::max());
+
+    std::queue<int> q;
+    for (int loc = 0; loc < map_size; ++loc)
+    {
+        if (env->map[loc] == 1)
+        {
+            map_clearance[loc] = 0;
+            q.push(loc);
+        }
+    }
+
+    const int cols = env->cols;
+    const int rows = env->rows;
+    const int dr[8] = {-1, -1, -1, 0, 0, 1, 1, 1};
+    const int dc[8] = {-1, 0, 1, -1, 1, -1, 0, 1};
+
+    if (q.empty())
+    {
+        map_clearance.assign(map_size, rows + cols);
+    }
+    else
+    {
+        while (!q.empty())
+        {
+            int current = q.front();
+            q.pop();
+
+            int cur_r = current / cols;
+            int cur_c = current % cols;
+
+            for (int d = 0; d < 8; ++d)
+            {
+                int nr = cur_r + dr[d];
+                int nc = cur_c + dc[d];
+                if (nr < 0 || nr >= rows || nc < 0 || nc >= cols)
+                    continue;
+
+                int next = nr * cols + nc;
+
+                if (map_clearance[next] > map_clearance[current] + 1)
+                {
+                    map_clearance[next] = map_clearance[current] + 1;
+                    q.push(next);
+                }
+            }
+        }
+    }
+
+    const int num_agents = static_cast<int>(env->curr_states.size());
+    sorted_agent_ids_by_clearance.resize(num_agents);
+    std::iota(sorted_agent_ids_by_clearance.begin(), sorted_agent_ids_by_clearance.end(), 0);
+    std::sort(sorted_agent_ids_by_clearance.begin(), sorted_agent_ids_by_clearance.end(),
+              [&](int a, int b)
+              {
+                  int loc_a = env->curr_states[a].location;
+                  int loc_b = env->curr_states[b].location;
+
+                  int clearance_a = (loc_a >= 0 && loc_a < map_size) ? map_clearance[loc_a] : -1;
+                  int clearance_b = (loc_b >= 0 && loc_b < map_size) ? map_clearance[loc_b] : -1;
+
+                  if (clearance_a != clearance_b)
+                      return clearance_a > clearance_b;
+                  return a < b;
+              });
+
+    cout << "[DEBUG] Clearance table:" << endl;
+    for (int r = 0; r < rows; ++r)
+    {
+        for (int c = 0; c < cols; ++c)
+        {
+            int loc = r * cols + c;
+            cout << map_clearance[loc] << " ";
+        }
+        cout << endl;
+    }
+
+    cout << "[DEBUG] Agents sorted by clearance (high->low): ";
+    for (int agent_id : sorted_agent_ids_by_clearance)
+    {
+        int loc = env->curr_states[agent_id].location;
+        int clearance = (loc >= 0 && loc < map_size) ? map_clearance[loc] : -1;
+        cout << agent_id << "(" << clearance << ") ";
+    }
+    cout << endl;
     return;
 }
 
@@ -631,6 +724,16 @@ bool isTaskNode(ListDigraph::Node node, ListDigraph& g, ListDigraph::Node sink)
 unordered_map<int,list<int>> get_guide_path()
 { 
     return agent_guide_path; 
+}
+
+const std::vector<int>& get_map_clearance()
+{
+    return map_clearance;
+}
+
+const std::vector<int>& get_sorted_agent_ids_by_clearance()
+{
+    return sorted_agent_ids_by_clearance;
 }
 
 };

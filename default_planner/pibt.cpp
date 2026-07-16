@@ -13,11 +13,26 @@ int get_gp_h(TrajLNS& lns, int ai, int target){
     int min_heuristic;
 
     if (!lns.traj_dists.empty() && !lns.traj_dists[ai].empty())
+	{
         min_heuristic = get_dist_2_path(lns.traj_dists[ai], lns.env, target, &(lns.neighbors));	
+		// if (lns.env->goal_locations[ai].empty())
+		// {
+		// 	std::cout<<"dist2path is not empty but goal location is empty for agent "<<ai<<std::endl;
+		// 	std::cout<<"guid path size: "<<lns.trajs[ai].size()<<std::endl;
+		// }
+	}
     else if (!lns.heuristics[lns.tasks.at(ai)].empty())
+	{
         min_heuristic = get_heuristic(lns.heuristics[lns.tasks.at(ai)], lns.env, target, &(lns.neighbors));
+		// std::cout<<"heuristic table is not empty but dist2path is empty for agent "<<ai<<std::endl;
+		// std::cout<<"target size: "<<lns.env->goal_locations[ai].size()<<std::endl;
+	}
     else
+	{
         min_heuristic = manhattanDistance(target,lns.tasks.at(ai),lns.env);
+		// std::cout<<"heuristic table is empty for agent "<<ai<<std::endl;
+		// std::cout<<"target size: "<<lns.env->goal_locations[ai].size()<<std::endl;
+	}
     
     return min_heuristic;
 }
@@ -67,18 +82,16 @@ bool causalPIBT(int curr_id, int higher_id,std::vector<State>& prev_states,
 		{
 			assert(validateMove(prev_loc, neighbor, lns.env));
 
-			int min_heuristic = 0;
-			if (prev_decision[neighbor] != -1 && prev_decision[neighbor] != curr_id) //already occupied by other agent
-				min_heuristic = 1;
+			int min_heuristic = get_heuristic(lns.heuristics[lns.tasks.at(curr_id)], lns.env, target, &(lns.neighbors));
+			int secondary_heuristic = get_heuristic(lns.heuristics[lns.tasks.at(curr_id)], lns.env, neighbor, &(lns.neighbors));
 
-			successors.emplace_back(neighbor,min_heuristic,0,rand());
+			successors.emplace_back(neighbor,min_heuristic,secondary_heuristic,rand());
 		}
 
-		int wait_heuristic = 0;
-		if (decision[prev_loc] != -1) //other agent want to occupy
-			wait_heuristic = 1;
+		int wait_heuristic = get_heuristic(lns.heuristics[lns.tasks.at(curr_id)], lns.env, target, &(lns.neighbors));
+		int wait_secondary_heuristic = get_heuristic(lns.heuristics[lns.tasks.at(curr_id)], lns.env, prev_loc, &(lns.neighbors));
 
-		successors.emplace_back(prev_loc, wait_heuristic,0,rand());
+		successors.emplace_back(prev_loc, wait_heuristic,wait_secondary_heuristic,rand());
 	}
 
 

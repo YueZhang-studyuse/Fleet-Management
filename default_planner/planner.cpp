@@ -4,6 +4,8 @@
 #include "pibt.h"
 #include "flow.h"
 #include "const.h"
+#include "scheduler.h"
+#include <numeric>
 
 
 namespace DefaultPlanner{
@@ -131,6 +133,67 @@ namespace DefaultPlanner{
         decision.clear();
         decision.resize(env->map.size(), -1);
 
+        if (env->curr_timestep == 0)
+        {
+            dummy_goals.assign(env->num_of_agents, -1);
+
+            const std::vector<int>& map_clearance = get_map_clearance();
+            const std::vector<int>& sorted_agents = get_sorted_agent_ids_by_clearance();
+
+            std::vector<int> traversable_cells;
+            traversable_cells.reserve(env->map.size());
+            for (int loc = 0; loc < env->map.size(); ++loc)
+            {
+                if (env->map[loc] != 1)
+                    traversable_cells.push_back(loc);
+            }
+
+            std::sort(traversable_cells.begin(), traversable_cells.end(),
+                      [&](int a, int b)
+                      {
+                          int clearance_a = (a >= 0 && a < map_clearance.size()) ? map_clearance[a] : -1;
+                          int clearance_b = (b >= 0 && b < map_clearance.size()) ? map_clearance[b] : -1;
+                          if (clearance_a != clearance_b)
+                              return clearance_a > clearance_b;
+                          return a < b;
+                      });
+
+            std::vector<int> agent_order;
+            if (sorted_agents.size() == static_cast<size_t>(env->num_of_agents))
+            {
+                agent_order = sorted_agents;
+            }
+            else
+            {
+                agent_order.resize(env->num_of_agents);
+                std::iota(agent_order.begin(), agent_order.end(), 0);
+            }
+
+            std::vector<bool> goal_used(env->map.size(), false);
+            int cell_ptr = 0;
+            for (int agent_id : agent_order)
+            {
+                while (cell_ptr < static_cast<int>(traversable_cells.size()) && goal_used[traversable_cells[cell_ptr]])
+                    ++cell_ptr;
+
+                if (cell_ptr < static_cast<int>(traversable_cells.size()))
+                {
+                    int goal = traversable_cells[cell_ptr++];
+                    dummy_goals[agent_id] = goal;
+                    goal_used[goal] = true;
+                }
+                else
+                {
+                    int fallback_goal = env->curr_states[agent_id].location;
+                    if (fallback_goal >= 0 && fallback_goal < env->map.size() && env->map[fallback_goal] != 1 && !goal_used[fallback_goal])
+                    {
+                        dummy_goals[agent_id] = fallback_goal;
+                        goal_used[fallback_goal] = true;
+                    }
+                }
+            }
+        }
+
         // update the status of each agent and prepare for planning
         int count = 0;
         for(int i=0; i<env->num_of_agents; i++)
@@ -146,6 +209,16 @@ namespace DefaultPlanner{
                             count++;
                         }
                 }
+
+                if (env->goal_locations[i].empty() && i < dummy_goals.size() && dummy_goals[i] != -1)
+                {
+                    int dummy_goal_loc = dummy_goals[i];
+                    if (trajLNS.heuristics.at(dummy_goal_loc).empty())
+                    {
+                        init_heuristic(trajLNS.heuristics[dummy_goal_loc], env, dummy_goal_loc);
+                        count++;
+                    }
+                }
             }
 
             prev_states[i] = env->curr_states[i];
@@ -158,18 +231,21 @@ namespace DefaultPlanner{
             // set the goal location of each agent
             if (env->goal_locations[i].empty())
             {
-                //first set to the current location
-                trajLNS.tasks[i] = env->curr_states[i].location;
+                // assign pre-selected high-clearance dummy goals when no real task goal exists
+                if (i < dummy_goals.size() && dummy_goals[i] != -1)
+                    trajLNS.tasks[i] = dummy_goals[i];
+                else
+                    trajLNS.tasks[i] = env->curr_states[i].location;
                 //set the pririty to 0
                 p[i] = 0;
-                //remove the trajectory of the agent 
+                // //remove the trajectory of the agent 
                 if (!trajLNS.trajs[i].empty())
                     remove_traj(trajLNS, i);
                 //add its current position as the trajectory of the agent
                 trajLNS.trajs[i].clear();
-                trajLNS.trajs[i].push_back(env->curr_states[i].location);
-                add_traj(trajLNS,i);
-                update_dist_2_path(trajLNS,i);
+                // trajLNS.trajs[i].push_back(env->curr_states[i].location);
+                // add_traj(trajLNS,i);
+                // update_dist_2_path(trajLNS,i);
             }
             else
             {
@@ -319,6 +395,12 @@ namespace DefaultPlanner{
         //pibt
         for (int i : ids)
         {
+            if (env->goal_locations[i].empty())
+            {
+                if (!trajLNS.trajs[i].empty())
+                    remove_traj(trajLNS, i);
+                trajLNS.trajs[i].clear();
+            }
             if (next_states[i].location==-1)
             {
                 assert(prev_states[i].location >=0 && prev_states[i].location < env->map.size());
