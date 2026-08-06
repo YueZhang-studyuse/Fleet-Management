@@ -28,12 +28,6 @@ namespace DefaultPlanner{
     std::mt19937 mt1;
     TrajLNS trajLNS;
 
-
-    // std::vector<Int4> get_flow() 
-    // {
-    //     return trajLNS.flow;
-    // }
-
     std::vector<Double4> get_opened_flow(SharedEnvironment* env)
     {
         double decay = 1;
@@ -212,41 +206,69 @@ namespace DefaultPlanner{
             // check if the agent need a guide path update, when the agent has no guide path or the guide path does not end at the goal location
             require_guide_path[i] = false;
             
+            // // set the goal location of each agent
+            // if (env->goal_locations[i].empty())
+            // {
+            //     // assign pre-selected high-clearance dummy goals when no real task goal exists
+            //     if (i < dummy_goals.size() && dummy_goals[i] != -1)
+            //         trajLNS.tasks[i] = dummy_goals[i];
+            //     else
+            //         trajLNS.tasks[i] = env->curr_states[i].location;
+            //     //set the pririty to 0
+            //     p[i] = 0;
+            //     // //remove the trajectory of the agent 
+            //     if (!trajLNS.trajs[i].empty())
+            //         remove_traj(trajLNS, i);
+            //     //add its current position as the trajectory of the agent
+            //     trajLNS.trajs[i].clear();
+            //     // trajLNS.trajs[i].push_back(env->curr_states[i].location);
+            //     // add_traj(trajLNS,i);
+            //     // update_dist_2_path(trajLNS,i);
+            // }
+            // else
+            // {
+            //     trajLNS.tasks[i] = env->goal_locations[i].front().first;
+            //     if (trajLNS.trajs[i].empty() || trajLNS.trajs[i].back() != trajLNS.tasks[i])
+            //     {
+            //         require_guide_path[i] = true;
+            //         p[i] = p_copy[i];
+            //     }
+            //     else
+            //     {
+            //         p[i] = p[i]+1;
+            //     }
+            //     if (trajLNS.neighbors[env->curr_states[i].location].size() == 1){
+            //         p[i] = p[i] + 10;
+            //     }
+            // }
+
             // set the goal location of each agent
-            if (env->goal_locations[i].empty())
-            {
-                // assign pre-selected high-clearance dummy goals when no real task goal exists
+            if (env->goal_locations[i].empty()){
                 if (i < dummy_goals.size() && dummy_goals[i] != -1)
                     trajLNS.tasks[i] = dummy_goals[i];
                 else
                     trajLNS.tasks[i] = env->curr_states[i].location;
-                //set the pririty to 0
-                p[i] = 0;
-                // //remove the trajectory of the agent 
-                if (!trajLNS.trajs[i].empty())
-                    remove_traj(trajLNS, i);
-                //add its current position as the trajectory of the agent
-                trajLNS.trajs[i].clear();
-                // trajLNS.trajs[i].push_back(env->curr_states[i].location);
-                // add_traj(trajLNS,i);
-                // update_dist_2_path(trajLNS,i);
             }
-            else
-            {
+            else{
                 trajLNS.tasks[i] = env->goal_locations[i].front().first;
-                if (trajLNS.trajs[i].empty() || trajLNS.trajs[i].back() != trajLNS.tasks[i])
-                {
-                    require_guide_path[i] = true;
-                    p[i] = p_copy[i];
-                }
-                else
-                {
-                    p[i] = p[i]+1;
-                }
-                if (trajLNS.neighbors[env->curr_states[i].location].size() == 1){
-                    p[i] = p[i] + 10;
-                }
             }
+            if (trajLNS.trajs[i].empty() || trajLNS.trajs[i].back() != trajLNS.tasks[i])
+            {
+                require_guide_path[i] = true;
+            }
+            // reset the pibt priority if the agent reached prvious goal location and switch to new goal location
+            if(require_guide_path[i])
+                p[i] = p_copy[i];
+            else if (!env->goal_locations[i].empty())
+                p[i] = p[i]+1;
+            if (env->goal_locations[i].empty())
+            {
+                p[i] = 0;
+            }
+
+            // give priority bonus to the agent if the agent is in a deadend location
+            if (!env->goal_locations[i].empty() && trajLNS.neighbors[env->curr_states[i].location].size() == 1){
+                p[i] = p[i] + 10;
             
         }
 
