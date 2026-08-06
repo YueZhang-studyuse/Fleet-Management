@@ -12,6 +12,9 @@ int get_d(int diff, const SharedEnvironment* env)  {
 
 bool validateMove(int loc, int loc2, const SharedEnvironment* env)
 {
+    if (!env || loc < 0 || loc >= static_cast<int>(env->map.size()) || loc2 < 0 || loc2 >= static_cast<int>(env->map.size()))
+        return false;
+
     int loc_x = loc/env->cols;
     int loc_y = loc%env->cols;
 
@@ -29,6 +32,10 @@ bool validateMove(int loc, int loc2, const SharedEnvironment* env)
 }
 
 int manhattanDistance(int loc, int loc2,const SharedEnvironment* env){
+    if (!env || loc < 0 || loc >= static_cast<int>(env->map.size()) || loc2 < 0 || loc2 >= static_cast<int>(env->map.size())) {
+        return MAX_TIMESTEP;
+    }
+
 	int loc_x = loc/env->cols;
 	int loc_y = loc%env->cols;
 	int loc2_x = loc2/env->cols;
@@ -97,7 +104,9 @@ void getNeighbors_nowait(const SharedEnvironment* env, std::vector<std::pair<int
 void getNeighborLocs(const Neighbors* ns, std::vector<int>& neighbors, int location) {
     neighbors.clear();
 	//forward
-	assert(location >= 0 && location < ns->size());
+    if (ns == nullptr || location < 0 || location >= static_cast<int>(ns->size())) {
+        return;
+    }
     neighbors = ns->at(location);
     return;
 
@@ -106,7 +115,12 @@ void getNeighborLocs(const Neighbors* ns, std::vector<int>& neighbors, int locat
 void getNeighborLocs(const Neighbors* ns, int neighbors[], int location) {
 	//forward
     int size = 4;
-	assert(location >= 0 && location < ns->size());
+    if (ns == nullptr || location < 0 || location >= static_cast<int>(ns->size())) {
+        for (int i = 0; i < size; i++) {
+            neighbors[i] = -1;
+        }
+        return;
+    }
 
 	for (int i = 0; i < size; i++) {
 		if (i < ns->at(location).size()){

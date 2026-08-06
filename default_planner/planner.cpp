@@ -129,48 +129,48 @@ namespace DefaultPlanner{
         decision.clear();
         decision.resize(env->map.size(), -1);
 
-        if (env->curr_timestep == 0)
-        {
-            dummy_goals.assign(env->num_of_agents, -1);
+        // if (env->curr_timestep == 0)
+        // {
+        //     dummy_goals.assign(env->num_of_agents, -1);
 
-            const std::vector<int>& sorted_cells = get_sorted_cell_ids_by_clearance();
+        //     const std::vector<int>& sorted_cells = get_sorted_cell_ids_by_clearance();
 
-            std::vector<int> traversable_cells;
-            traversable_cells.reserve(env->map.size());
-            for (int loc : sorted_cells)
-            {
-                if (loc >= 0 && loc < env->map.size() && env->map[loc] != 1)
-                    traversable_cells.push_back(loc);
-            }
+        //     std::vector<int> traversable_cells;
+        //     traversable_cells.reserve(env->map.size());
+        //     for (int loc : sorted_cells)
+        //     {
+        //         if (loc >= 0 && loc < env->map.size() && env->map[loc] != 1)
+        //             traversable_cells.push_back(loc);
+        //     }
 
-            std::vector<int> agent_order;
-            agent_order.resize(env->num_of_agents);
-            std::iota(agent_order.begin(), agent_order.end(), 0);
+        //     std::vector<int> agent_order;
+        //     agent_order.resize(env->num_of_agents);
+        //     std::iota(agent_order.begin(), agent_order.end(), 0);
 
-            std::vector<bool> goal_used(env->map.size(), false);
-            int cell_ptr = 0;
-            for (int agent_id : agent_order)
-            {
-                while (cell_ptr < static_cast<int>(traversable_cells.size()) && goal_used[traversable_cells[cell_ptr]])
-                    ++cell_ptr;
+        //     std::vector<bool> goal_used(env->map.size(), false);
+        //     int cell_ptr = 0;
+        //     for (int agent_id : agent_order)
+        //     {
+        //         while (cell_ptr < static_cast<int>(traversable_cells.size()) && goal_used[traversable_cells[cell_ptr]])
+        //             ++cell_ptr;
 
-                if (cell_ptr < static_cast<int>(traversable_cells.size()))
-                {
-                    int goal = traversable_cells[cell_ptr++];
-                    dummy_goals[agent_id] = goal;
-                    goal_used[goal] = true;
-                }
-                else
-                {
-                    int fallback_goal = env->curr_states[agent_id].location;
-                    if (fallback_goal >= 0 && fallback_goal < env->map.size() && env->map[fallback_goal] != 1 && !goal_used[fallback_goal])
-                    {
-                        dummy_goals[agent_id] = fallback_goal;
-                        goal_used[fallback_goal] = true;
-                    }
-                }
-            }
-        }
+        //         if (cell_ptr < static_cast<int>(traversable_cells.size()))
+        //         {
+        //             int goal = traversable_cells[cell_ptr++];
+        //             dummy_goals[agent_id] = goal;
+        //             goal_used[goal] = true;
+        //         }
+        //         else
+        //         {
+        //             int fallback_goal = env->curr_states[agent_id].location;
+        //             if (fallback_goal >= 0 && fallback_goal < env->map.size() && env->map[fallback_goal] != 1 && !goal_used[fallback_goal])
+        //             {
+        //                 dummy_goals[agent_id] = fallback_goal;
+        //                 goal_used[fallback_goal] = true;
+        //             }
+        //         }
+        //     }
+        // }
 
         // update the status of each agent and prepare for planning
         int count = 0;
@@ -188,15 +188,15 @@ namespace DefaultPlanner{
                         }
                 }
 
-                if (env->goal_locations[i].empty() && i < dummy_goals.size() && dummy_goals[i] != -1)
-                {
-                    int dummy_goal_loc = dummy_goals[i];
-                    if (trajLNS.heuristics.at(dummy_goal_loc).empty())
-                    {
-                        init_heuristic(trajLNS.heuristics[dummy_goal_loc], env, dummy_goal_loc);
-                        count++;
-                    }
-                }
+                // if (env->goal_locations[i].empty() && i < dummy_goals.size() && dummy_goals[i] != -1)
+                // {
+                //     int dummy_goal_loc = dummy_goals[i];
+                //     if (trajLNS.heuristics.at(dummy_goal_loc).empty())
+                //     {
+                //         init_heuristic(trajLNS.heuristics[dummy_goal_loc], env, dummy_goal_loc);
+                //         count++;
+                //     }
+                // }
             }
 
             prev_states[i] = env->curr_states[i];
@@ -243,9 +243,16 @@ namespace DefaultPlanner{
             // }
 
             // set the goal location of each agent
-            if (env->goal_locations[i].empty()){
-                if (i < dummy_goals.size() && dummy_goals[i] != -1)
-                    trajLNS.tasks[i] = dummy_goals[i];
+            // if (env->goal_locations[i].empty()){
+            //     if (i < dummy_goals.size() && dummy_goals[i] != -1)
+            //         trajLNS.tasks[i] = dummy_goals[i];
+            //     else
+            //         trajLNS.tasks[i] = env->curr_states[i].location;
+            // }
+            if (env->goal_locations[i].empty())
+            {
+                if (env->dummy_parking_allocation.find(i) != env->dummy_parking_allocation.end() && !env->dummy_parking_allocation[i].empty())
+                    trajLNS.tasks[i] = env->dummy_parking_allocation[i].front();
                 else
                     trajLNS.tasks[i] = env->curr_states[i].location;
             }
@@ -270,6 +277,8 @@ namespace DefaultPlanner{
             if (!env->goal_locations[i].empty() && trajLNS.neighbors[env->curr_states[i].location].size() == 1){
                 p[i] = p[i] + 10;
             
+        }
+
         }
 
         // compute the congestion minimised guide path for the agents that need guide path update

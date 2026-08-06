@@ -509,6 +509,7 @@ void schedule_plan_flow(int time_limit, std::vector<int> & proposed_schedule,  S
                 path.push_back(task_loc);
                 //cout << "Worker " << flexible_agent_ids[i] << " is assigned to Task " << task_id  << " through intermediate nodes." << endl;
                 proposed_schedule[flexible_agent_ids[i]] = task_id;
+                env->curr_task_schedule[flexible_agent_ids[i]] = task_id;
                 if (use_traffic)
                     agent_guide_path[flexible_agent_ids[i]] = path;
                 task_loc_ids[task_loc].pop_front();
@@ -521,6 +522,7 @@ void schedule_plan_flow(int time_limit, std::vector<int> & proposed_schedule,  S
             else 
             {
                 proposed_schedule[flexible_agent_ids[i]] = -1;
+                env->curr_task_schedule[flexible_agent_ids[i]] = -1;
                 //cout << "No solution found." << endl;
             }
         }
@@ -533,6 +535,210 @@ void schedule_plan_flow(int time_limit, std::vector<int> & proposed_schedule,  S
     auto end_time = std::chrono::high_resolution_clock::now();
     double elapsed_time = std::chrono::duration<double>(end_time - start_time).count();
     cout << "Solving time: " << elapsed_time << " seconds" << endl;
+
+}
+
+void schedule_plan_flow_dummy(int time_limit, SharedEnvironment* env, std::vector<Double4> background_flow, bool use_traffic, bool new_only)
+{
+
+    std::vector<int> dummy_agent_ids;
+    dummy_agent_ids.reserve(env->num_of_agents);
+    assert(static_cast<int>(env->curr_task_schedule.size()) == env->num_of_agents);
+    for (int agent_id = 0; agent_id < env->num_of_agents; ++agent_id)
+    {
+        if (env->curr_task_schedule[agent_id] == -1)
+            dummy_agent_ids.push_back(agent_id);
+    }
+
+    env->dummy_parking_allocation.clear();
+    for (int agent_id : dummy_agent_ids)
+    {
+        env->dummy_parking_allocation[agent_id] = {};
+    }
+
+    auto start_time = std::chrono::high_resolution_clock::now();
+
+    assert(!dummy_agent_ids.empty());
+    assert(!sorted_cell_ids_by_clearance.empty());
+    if (dummy_agent_ids.empty() || sorted_cell_ids_by_clearance.empty())
+    {
+        return;
+    }
+
+    assert(static_cast<int>(sorted_cell_ids_by_clearance.size()) == static_cast<int>(env->map.size()));
+
+    std::vector<int> selected_targets;
+    selected_targets.reserve(dummy_agent_ids.size());
+    for (int cell_id : sorted_cell_ids_by_clearance)
+    {
+        assert(cell_id >= 0 && cell_id < static_cast<int>(env->map.size()));
+        if (env->map[cell_id] == 1)
+            continue;
+        selected_targets.push_back(cell_id);
+        if (selected_targets.size() >= dummy_agent_ids.size())
+            break;
+    }
+
+    assert(selected_targets.size() >= dummy_agent_ids.size());
+    if (selected_targets.size() < dummy_agent_ids.size())
+    {
+        return;
+    }
+
+    const int num_workers = static_cast<int>(dummy_agent_ids.size());
+
+    ListDigraph g;
+    ListDigraph::NodeMap<int> supply(g);
+    ListDigraph::ArcMap<double> cost(g);
+    ListDigraph::ArcMap<int> capacity(g);
+    ListDigraph::ArcMap<int> flow(g);
+
+    std::vector<ListDigraph::Node> map_nodes(env->map.size());
+    ListDigraph::Node source = g.addNode();
+    ListDigraph::Node sink = g.addNode();
+
+    std::unordered_map<int, int> node_to_maploc;
+    for (int i = 0; i < static_cast<int>(env->map.size()); ++i)
+    {
+        map_nodes[i] = g.addNode();
+        node_to_maploc[lemon::ListDigraphBase::id(map_nodes[i])] = i;
+    }
+
+    supply[source] = num_workers;
+    supply[sink] = -num_workers;
+
+    for (int i = 0; i < static_cast<int>(env->map.size()); ++i)
+    {
+        supply[map_nodes[i]] = 0;
+    }
+
+    for (int agent_id : dummy_agent_ids)
+    {
+        int start_loc = env->curr_states[agent_id].location;
+        assert(start_loc >= 0 && start_loc < static_cast<int>(env->map.size()));
+        ListDigraph::Arc a = g.addArc(source, map_nodes[start_loc]);
+        capacity[a] = 1;
+        cost[a] = 0;
+    }
+
+    std::unordered_map<int, int> node_to_target_loc;
+    for (int i = 0; i < num_workers; ++i)
+    {
+        int target_loc = selected_targets[i];
+        ListDigraph::Arc a = g.addArc(map_nodes[target_loc], sink);
+        node_to_target_loc[lemon::ListDigraphBase::id(map_nodes[target_loc])] = target_loc;
+        capacity[a] = 1;
+        // Clearance priority is already enforced by selecting top-k targets.
+        cost[a] = 0;
+    }
+
+    std::vector<int> neighbor = {-env->cols, 1, env->cols, -1};
+    int diff, d, op_flow, all_vertex_flow;
+    int temp_op, temp_vertex;
+
+    for (int loc = 0; loc < static_cast<int>(env->map.size()); ++loc)
+    {
+        if (env->map[loc] == 1)
+            continue;
+
+        for (int i = 0; i < 4; ++i)
+        {
+            int neighbor_loc = loc + neighbor[i];
+            if (neighbor_loc < 0 || neighbor_loc >= static_cast<int>(env->map.size()) || env->map[neighbor_loc] == 1)
+                continue;
+
+            ListDigraph::Arc a = g.addArc(map_nodes[loc], map_nodes[neighbor_loc]);
+
+            if (use_traffic)
+            {
+                op_flow = 0;
+                all_vertex_flow = 0;
+                diff = loc - neighbor_loc;
+                d = get_d(diff, env);
+                temp_op = ((background_flow[loc].d[d] + 1) * background_flow[neighbor_loc].d[(d + 2) % 4]);
+                temp_vertex = 1;
+                for (int j = 0; j < 4; ++j)
+                {
+                    temp_vertex += background_flow[neighbor_loc].d[j];
+                }
+                op_flow += temp_op;
+                all_vertex_flow += (temp_vertex - 1) / 2;
+                cost[a] = 1 + op_flow + all_vertex_flow;
+            }
+            else
+            {
+                cost[a] = 1;
+            }
+
+            capacity[a] = num_workers;
+        }
+    }
+
+    NetworkSimplex<ListDigraph> ns(g);
+    ns.costMap(cost);
+    ns.upperMap(capacity);
+    ns.supplyMap(supply);
+    ns.flowMap(flow);
+
+    if (ns.run() != NetworkSimplex<ListDigraph>::OPTIMAL)
+    {
+        cout << "No optimal dummy parking solution found." << endl;
+        return;
+    }
+
+    std::unordered_map<int, int> edge_flows;
+    for (int agent_id : dummy_agent_ids)
+    {
+        int start_loc = env->curr_states[agent_id].location;
+        assert(start_loc >= 0 && start_loc < static_cast<int>(env->map.size()));
+        ListDigraph::Node current = map_nodes[start_loc];
+        list<int> path;
+
+        while (node_to_target_loc.find(lemon::ListDigraphBase::id(current)) == node_to_target_loc.end())
+        {
+            if (current == sink)
+                break;
+
+            int loc = node_to_maploc[lemon::ListDigraphBase::id(current)];
+            path.push_back(loc);
+
+            bool found = false;
+            for (ListDigraph::OutArcIt arc(g, current); arc != INVALID; ++arc)
+            {
+                if (ns.flow(arc) > 0)
+                {
+                    int arc_id = lemon::ListDigraphBase::id(arc);
+                    if (edge_flows.find(arc_id) == edge_flows.end())
+                    {
+                        edge_flows[arc_id] = ns.flow(arc);
+                    }
+                    if (edge_flows[arc_id] <= 0)
+                        continue;
+
+                    current = g.target(arc);
+                    edge_flows[arc_id]--;
+                    found = true;
+                    break;
+                }
+            }
+
+            if (!found)
+                break;
+        }
+
+        if (node_to_target_loc.find(lemon::ListDigraphBase::id(current)) != node_to_target_loc.end())
+        {
+            int target_loc = node_to_target_loc[lemon::ListDigraphBase::id(current)];
+            path.push_back(target_loc);
+            agent_guide_path[agent_id] = path;
+            env->dummy_parking_allocation[agent_id] = {target_loc};
+            //cout << "Agent " << agent_id << " is assigned to dummy parking location " << target_loc << " with clearance of " << std::get<0>(map_clearance[target_loc]) << endl;
+        }
+    }
+
+    auto end_time = std::chrono::high_resolution_clock::now();
+    double elapsed_time = std::chrono::duration<double>(end_time - start_time).count();
+    cout << "Dummy parking flow solving time: " << elapsed_time << " seconds" << endl;
 
 }
 

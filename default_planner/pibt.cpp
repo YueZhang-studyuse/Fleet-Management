@@ -58,9 +58,9 @@ bool causalPIBT(int curr_id, int higher_id,std::vector<State>& prev_states,
 	std::vector<PIBT_C> successors;
 	getNeighborLocs(&(lns.neighbors),neighbors,prev_loc);
 	
-	//use regular guid path heuristic for agent that has goal
-	if (!lns.env->goal_locations[curr_id].empty())
-	{
+	// //use regular guid path heuristic for agent that has goal
+	// if (!lns.env->goal_locations[curr_id].empty())
+	// {
 		for (auto& neighbor: neighbors)
 		{
 
@@ -74,25 +74,25 @@ bool causalPIBT(int curr_id, int higher_id,std::vector<State>& prev_states,
 		int wait_heuristic = get_gp_h(lns, curr_id, prev_loc);
 
 		successors.emplace_back(prev_loc, wait_heuristic,0,rand());
-	}
-	else //evaluate where to push based on interference with other agents, for agent that has no goal
-	//initial attempt: only check current cell
-	{
-		for (auto& neighbor: neighbors)
-		{
-			assert(validateMove(prev_loc, neighbor, lns.env));
+	// }
+	// else //evaluate where to push based on interference with other agents, for agent that has no goal
+	// //initial attempt: only check current cell
+	// {
+	// 	for (auto& neighbor: neighbors)
+	// 	{
+	// 		assert(validateMove(prev_loc, neighbor, lns.env));
 
-			int min_heuristic = get_heuristic(lns.heuristics[lns.tasks.at(curr_id)], lns.env, target, &(lns.neighbors));
-			int secondary_heuristic = get_heuristic(lns.heuristics[lns.tasks.at(curr_id)], lns.env, neighbor, &(lns.neighbors));
+	// 		int min_heuristic = get_heuristic(lns.heuristics[lns.tasks.at(curr_id)], lns.env, target, &(lns.neighbors));
+	// 		int secondary_heuristic = get_heuristic(lns.heuristics[lns.tasks.at(curr_id)], lns.env, neighbor, &(lns.neighbors));
 
-			successors.emplace_back(neighbor,min_heuristic,secondary_heuristic,rand());
-		}
+	// 		successors.emplace_back(neighbor,min_heuristic,secondary_heuristic,rand());
+	// 	}
 
-		int wait_heuristic = get_heuristic(lns.heuristics[lns.tasks.at(curr_id)], lns.env, target, &(lns.neighbors));
-		int wait_secondary_heuristic = get_heuristic(lns.heuristics[lns.tasks.at(curr_id)], lns.env, prev_loc, &(lns.neighbors));
+	// 	int wait_heuristic = get_heuristic(lns.heuristics[lns.tasks.at(curr_id)], lns.env, target, &(lns.neighbors));
+	// 	int wait_secondary_heuristic = get_heuristic(lns.heuristics[lns.tasks.at(curr_id)], lns.env, prev_loc, &(lns.neighbors));
 
-		successors.emplace_back(prev_loc, wait_heuristic,wait_secondary_heuristic,rand());
-	}
+	// 	successors.emplace_back(prev_loc, wait_heuristic,wait_secondary_heuristic,rand());
+	// }
 
 
 	std::sort(successors.begin(), successors.end(), 

@@ -38,6 +38,7 @@ void TaskScheduler::plan(int time_limit, std::vector<int> & proposed_schedule)
     if (solver == 1)
     {
         DefaultPlanner::schedule_plan_flow(limit, proposed_schedule, env, background_flow, use_traffic, new_only);
+        DefaultPlanner::schedule_plan_flow_dummy(limit, env, background_flow, use_traffic, new_only);
     }
     else if (solver == 2)
     {
