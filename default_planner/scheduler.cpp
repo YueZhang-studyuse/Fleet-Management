@@ -37,12 +37,105 @@ struct Node
     };  // used by OPEN (heap) to compare nodes (top of the heap has min f-val, and then highest g-val)
 };
 
+static std::vector<std::tuple<int, int>> calculate_map_clearance(const std::vector<int>& map, int rows, int cols)
+{
+    const int map_size = static_cast<int>(map.size());
+    std::vector<int> clearance_distance(map_size, std::numeric_limits<int>::max());
+
+    // Multi-source BFS from all obstacle cells to get each cell's nearest-obstacle distance.
+    std::queue<int> q;
+    for (int loc = 0; loc < map_size; ++loc)
+    {
+        if (map[loc] == 1)
+        {
+            clearance_distance[loc] = 0;
+            q.push(loc);
+        }
+    }
+
+    const int dr[8] = {-1, -1, -1, 0, 0, 1, 1, 1};
+    const int dc[8] = {-1, 0, 1, -1, 1, -1, 0, 1};
+
+    if (q.empty())
+    {
+        // Degenerate case: no obstacles on map, use a large uniform clearance baseline.
+        clearance_distance.assign(map_size, rows + cols);
+    }
+    else
+    {
+        while (!q.empty())
+        {
+            int current = q.front();
+            q.pop();
+
+            int cur_r = current / cols;
+            int cur_c = current % cols;
+
+            for (int d = 0; d < 8; ++d)
+            {
+                int nr = cur_r + dr[d];
+                int nc = cur_c + dc[d];
+                if (nr < 0 || nr >= rows || nc < 0 || nc >= cols)
+                    continue;
+
+                int next = nr * cols + nc;
+
+                if (clearance_distance[next] > clearance_distance[current] + 1)
+                {
+                    clearance_distance[next] = clearance_distance[current] + 1;
+                    q.push(next);
+                }
+            }
+        }
+    }
+
+    // Prefix-sum grid enables O(1) obstacle counting inside each cell's clearance window.
+    std::vector<int> obstacle_prefix((rows + 1) * (cols + 1), 0);
+    auto pref = [&](int r, int c) -> int&
+    {
+        return obstacle_prefix[r * (cols + 1) + c];
+    };
+
+    for (int r = 0; r < rows; ++r)
+    {
+        for (int c = 0; c < cols; ++c)
+        {
+            int loc = r * cols + c;
+            int obstacle = (map[loc] == 1) ? 1 : 0;
+            pref(r + 1, c + 1) = obstacle + pref(r, c + 1) + pref(r + 1, c) - pref(r, c);
+        }
+    }
+
+    // Store for each cell: (clearance distance, obstacles in clearance bounding box).
+    std::vector<std::tuple<int, int>> clearance(map_size, std::make_tuple(0, 0));
+    for (int loc = 0; loc < map_size; ++loc)
+    {
+        int cell_clearance = clearance_distance[loc];
+        int r = loc / cols;
+        int c = loc % cols;
+        int top = std::max(0, r - cell_clearance);
+        int bottom = std::min(rows - 1, r + cell_clearance);
+        int left = std::max(0, c - cell_clearance);
+        int right = std::min(cols - 1, c + cell_clearance);
+
+        int obstacle_count = pref(bottom + 1, right + 1)
+                           - pref(top, right + 1)
+                           - pref(bottom + 1, left)
+                           + pref(top, left);
+
+        clearance[loc] = std::make_tuple(cell_clearance, obstacle_count);
+    }
+
+    return clearance;
+}
+
 static void refresh_sorted_cells_by_clearance(const SharedEnvironment* env)
 {
     const int map_size = static_cast<int>(env->map.size());
 
     sorted_cell_ids_by_clearance.resize(map_size);
     std::iota(sorted_cell_ids_by_clearance.begin(), sorted_cell_ids_by_clearance.end(), 0);
+    // Primary key: larger clearance first; secondary: fewer nearby obstacles; tertiary: lower id.
     std::sort(sorted_cell_ids_by_clearance.begin(), sorted_cell_ids_by_clearance.end(),
               [&](int a, int b)
               {
@@ -60,6 +153,121 @@ static void refresh_sorted_cells_by_clearance(const SharedEnvironment* env)
     sorted_cell_clearance_levels.clear();
     int max_clearance = -1;
     int min_clearance = -1;
+    // Capture the clearance range represented in the sorted order.
+    if (!sorted_cell_ids_by_clearance.empty())
+    {
+        int top_cell = sorted_cell_ids_by_clearance.front();
+        if (top_cell >= 0 && top_cell < map_size)
+            max_clearance = std::get<0>(map_clearance[top_cell]);
+
+        int last_cell = sorted_cell_ids_by_clearance.back();
+        if (last_cell >= 0 && last_cell < map_size)
+            min_clearance = std::get<0>(map_clearance[last_cell]);
+    }
+
+    auto find_first_index_for_clearance = [&](int target_clearance) -> int
+    {
+        // Map a clearance value to its first position in the sorted cell array.
+        for (int idx = 0; idx < static_cast<int>(sorted_cell_ids_by_clearance.size()); ++idx)
+        {
+            int cell_id = sorted_cell_ids_by_clearance[idx];
+            if (cell_id < 0 || cell_id >= map_size)
+                continue;
+            if (std::get<0>(map_clearance[cell_id]) == target_clearance)
+                return idx;
+        }
+        return -1;
+    };
+
+    if (max_clearance >= 0 && min_clearance >= 0)
+    {
+        for (int c = max_clearance; c >= min_clearance; --c)
+        {
+            sorted_cell_clearance_levels.push_back(c);
+            sorted_cell_clearance_level_indices.push_back(find_first_index_for_clearance(c));
+        }
+    }
+}
+
+static void build_sort_clearance(const SharedEnvironment* env, int rows, int cols)
+{
+    map_clearance = calculate_map_clearance(env->map, rows, cols);
+    refresh_sorted_cells_by_clearance(env);
+}
+
+static void build_sort_clearance_with_update(const SharedEnvironment* env, int rows, int cols)
+{
+    const int map_size = static_cast<int>(env->map.size());
+
+    std::vector<int> temp_map = env->map;
+    std::vector<bool> selected(map_size, false);
+    map_clearance.assign(map_size, std::make_tuple(0, 0));
+
+    sorted_cell_ids_by_clearance.clear();
+    sorted_cell_ids_by_clearance.reserve(map_size);
+
+    std::vector<std::tuple<int, int>> last_temp_clearance;
+
+    // Iteratively pick the current best cell and then block it in the temporary map.
+    // This makes each next selection reflect previously chosen dummy parking cells.
+    for (int step = 0; step < map_size; ++step)
+    {
+        // Recompute clearance after each virtual placement so ranking adapts over time.
+        std::vector<std::tuple<int, int>> temp_clearance = calculate_map_clearance(temp_map, rows, cols);
+        last_temp_clearance = temp_clearance;
+
+        int best_loc = -1;
+        for (int loc = 0; loc < map_size; ++loc)
+        {
+            if (selected[loc])
+                continue;
+
+            if (best_loc == -1)
+            {
+                best_loc = loc;
+                continue;
+            }
+
+            const auto& current = temp_clearance[loc];
+            const auto& best = temp_clearance[best_loc];
+            if (std::get<0>(current) > std::get<0>(best) ||
+                (std::get<0>(current) == std::get<0>(best) && std::get<1>(current) < std::get<1>(best)) ||
+                (std::get<0>(current) == std::get<0>(best) && std::get<1>(current) == std::get<1>(best) && loc < best_loc))
+            {
+                best_loc = loc;
+            }
+        }
+
+        if (best_loc == -1)
+            break;
+
+        // Mark selected location as obstacle for the next iteration.
+        // Persist the clearance that was actually used when this location was selected.
+        sorted_cell_ids_by_clearance.push_back(best_loc);
+        map_clearance[best_loc] = temp_clearance[best_loc];
+        selected[best_loc] = true;
+        temp_map[best_loc] = 1;
+    }
+
+    // Safety fallback: ensure sorted_cell_ids_by_clearance always contains all map cells.
+    if (static_cast<int>(sorted_cell_ids_by_clearance.size()) < map_size)
+    {
+        for (int loc = 0; loc < map_size; ++loc)
+        {
+            if (!selected[loc])
+            {
+                sorted_cell_ids_by_clearance.push_back(loc);
+                if (!last_temp_clearance.empty())
+                    map_clearance[loc] = last_temp_clearance[loc];
+            }
+        }
+    }
+
+    sorted_cell_clearance_level_indices.clear();
+    sorted_cell_clearance_levels.clear();
+    int max_clearance = -1;
+    int min_clearance = -1;
+    // Build clearance-level lookup metadata from the final ranking.
     if (!sorted_cell_ids_by_clearance.empty())
     {
         int top_cell = sorted_cell_ids_by_clearance.front();
@@ -100,92 +308,14 @@ void schedule_initialize(int preprocess_time_limit, SharedEnvironment* env)
     DefaultPlanner::init_heuristics(env);
     mt.seed(0);
 
-    const int map_size = static_cast<int>(env->map.size());
-    std::vector<int> clearance_distance(map_size, std::numeric_limits<int>::max());
-
-    std::queue<int> q;
-    for (int loc = 0; loc < map_size; ++loc)
-    {
-        if (env->map[loc] == 1)
-        {
-            clearance_distance[loc] = 0;
-            q.push(loc);
-        }
-    }
-
-    const int cols = env->cols;
     const int rows = env->rows;
-    const int dr[8] = {-1, -1, -1, 0, 0, 1, 1, 1};
-    const int dc[8] = {-1, 0, 1, -1, 1, -1, 0, 1};
+    const int cols = env->cols;
+    const int map_size = static_cast<int>(env->map.size());
 
-    if (q.empty())
-    {
-        clearance_distance.assign(map_size, rows + cols);
-    }
-    else
-    {
-        while (!q.empty())
-        {
-            int current = q.front();
-            q.pop();
-
-            int cur_r = current / cols;
-            int cur_c = current % cols;
-
-            for (int d = 0; d < 8; ++d)
-            {
-                int nr = cur_r + dr[d];
-                int nc = cur_c + dc[d];
-                if (nr < 0 || nr >= rows || nc < 0 || nc >= cols)
-                    continue;
-
-                int next = nr * cols + nc;
-
-                if (clearance_distance[next] > clearance_distance[current] + 1)
-                {
-                    clearance_distance[next] = clearance_distance[current] + 1;
-                    q.push(next);
-                }
-            }
-        }
-    }
-
-    std::vector<int> obstacle_prefix((rows + 1) * (cols + 1), 0);
-    auto pref = [&](int r, int c) -> int&
-    {
-        return obstacle_prefix[r * (cols + 1) + c];
-    };
-
-    for (int r = 0; r < rows; ++r)
-    {
-        for (int c = 0; c < cols; ++c)
-        {
-            int loc = r * cols + c;
-            int obstacle = (env->map[loc] == 1) ? 1 : 0;
-            pref(r + 1, c + 1) = obstacle + pref(r, c + 1) + pref(r + 1, c) - pref(r, c);
-        }
-    }
-
-    map_clearance.assign(map_size, std::make_tuple(0, 0));
-    for (int loc = 0; loc < map_size; ++loc)
-    {
-        int clearance = clearance_distance[loc];
-        int r = loc / cols;
-        int c = loc % cols;
-        int top = std::max(0, r - clearance);
-        int bottom = std::min(rows - 1, r + clearance);
-        int left = std::max(0, c - clearance);
-        int right = std::min(cols - 1, c + clearance);
-
-        int obstacle_count = pref(bottom + 1, right + 1)
-                           - pref(top, right + 1)
-                           - pref(bottom + 1, left)
-                           + pref(top, left);
-
-        map_clearance[loc] = std::make_tuple(clearance, obstacle_count);
-    }
-
-    refresh_sorted_cells_by_clearance(env);
+    // build_sort_clearance(env, rows, cols);
+    // Use iterative update mode: each selected top-clearance cell is blocked before
+    // computing the next one, producing a spread-out clearance ranking.
+    build_sort_clearance_with_update(env, rows, cols);
 
     cout << "[DEBUG] Clearance table:" << endl;
     for (int r = 0; r < rows; ++r)
