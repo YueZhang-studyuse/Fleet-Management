@@ -698,14 +698,15 @@ void schedule_plan_flow_dummy(int time_limit, SharedEnvironment* env, std::vecto
     assert(static_cast<int>(sorted_cell_ids_by_clearance.size()) == static_cast<int>(env->map.size()));
 
     std::vector<int> selected_targets;
-    selected_targets.reserve(dummy_agent_ids.size());
+    int selected_target_size = std::max(static_cast<int>(dummy_agent_ids.size()*1.1), sorted_cell_ids_by_clearance.size());
+    selected_targets.reserve(selected_target_size);
     for (int cell_id : sorted_cell_ids_by_clearance)
     {
         assert(cell_id >= 0 && cell_id < static_cast<int>(env->map.size()));
         if (env->map[cell_id] == 1)
             continue;
         selected_targets.push_back(cell_id);
-        if (selected_targets.size() >= dummy_agent_ids.size())
+        if (selected_targets.size() >= selected_target_size)
             break;
     }
 
