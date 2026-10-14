@@ -20,6 +20,8 @@ public:
     std::vector<int> map;
     std::string file_storage_path;
 
+    int task_assign_active_agents = -1; // the number of active agents, -1 means all agents are active
+
     // goal locations for each agent
     // each task is a pair of <goal_loc, reveal_time>
     vector< vector<pair<int, int> > > goal_locations;
