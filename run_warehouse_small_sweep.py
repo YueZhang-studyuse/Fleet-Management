@@ -73,7 +73,7 @@ def main() -> int:
     jobs = []
     for instance in instance_files:
         parts = instance.stem.split("_")
-        agent_count = int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else None
+        agent_count = int(parts[2]) if len(parts) == 3 and parts[2].isdigit() else None
         active_list = (
             [agent_count - off for off in ACTIVE_AGENT_OFFSETS if agent_count > off]
             if agent_count is not None
