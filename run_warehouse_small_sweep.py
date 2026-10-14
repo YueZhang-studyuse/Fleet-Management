@@ -26,6 +26,9 @@ SCHEDULE_MODELS = [1]          # -m / --scheduleModel
 COMMIT_WINDOWS = [1]                 # -w / --commitWindow
 USE_TRAFFIC_VALUES = [False]   # -u / --useTraffic
 
+# -a / --activeAgents offsets below the agent count XXX in WS_XXX_YYY.json.
+ACTIVE_AGENT_OFFSETS = [40, 20, 0]
+
 # Set True if you want to keep running after a failed command.
 CONTINUE_ON_ERROR = False
 
@@ -67,22 +70,37 @@ def main() -> int:
         )
     )
 
-    total_runs = len(instance_files) * len(combos)
+    jobs = []
+    for instance in instance_files:
+        parts = instance.stem.split("_")
+        agent_count = int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else None
+        active_list = (
+            [agent_count - off for off in ACTIVE_AGENT_OFFSETS if agent_count > off]
+            if agent_count is not None
+            else []
+        )
+        if not active_list:
+            print(f"Skipping {instance.name}: cannot derive activeAgents")
+            continue
+        for active in active_list:
+            jobs.append((instance, active))
+
+    total_runs = len(jobs) * len(combos)
     failures = 0
     run_idx = 0
 
     print(f"Experiment: {EXPERIMENT_NAME}")
     print(f"Run folder: {run_root}")
-    print(f"Instances: {len(instance_files)}")
+    print(f"Instance/activeAgents jobs: {len(jobs)}")
     print(f"Option combinations: {len(combos)}")
     print(f"Total runs: {total_runs}")
 
     # Sequential execution in the main thread: one command at a time.
-    for instance in instance_files:
+    for instance, active in jobs:
         for model, window, use_traffic in combos:
             run_idx += 1
             run_tag = (
-                f"{instance.stem}__m{model}_w{window}_u{int(use_traffic)}"
+                f"{instance.stem}__a{active}_m{model}_w{window}_u{int(use_traffic)}"
             )
             out_file = json_dir / f"{run_tag}.json"
             log_file = log_dir / f"{run_tag}.log"
@@ -110,11 +128,13 @@ def main() -> int:
                 str(window),
                 "-u",
                 tf(use_traffic),
+                "-a",
+                str(active),
             ]
 
             print(
                 f"[{run_idx}/{total_runs}] {instance.name} "
-                f"m={model} w={window} u={int(use_traffic)}"
+                f"a={active} m={model} w={window} u={int(use_traffic)}"
             )
             with cout_file.open("w", encoding="utf-8") as fout:
                 result = subprocess.run(
