@@ -149,6 +149,10 @@ void schedule_plan_flow(int time_limit, std::vector<int> & proposed_schedule,  S
                     flexible_task_ids.push_back(task.first);
                     task_loc_ids[task.second.locations[0]].push_back(task.first);
                 }
+                else
+                {
+                    proposed_schedule[task.second.agent_assigned] = task.first;
+                }
             }
             else
             {
@@ -162,6 +166,12 @@ void schedule_plan_flow(int time_limit, std::vector<int> & proposed_schedule,  S
 
     cout<<"num of flexible agents: "<<flexible_agent_ids.size()<<endl;
     cout<<"num of flexible tasks: "<<flexible_task_ids.size()<<endl;
+
+    if (env->num_of_agents - flexible_agent_ids.size() >= env->task_assign_active_agents && env->task_assign_active_agents > 0)
+    {
+        cout<<"The number of active agents is already at the limit, no new task assignment will be made."<<endl;
+        return;
+    }
 
     int num_workers = flexible_agent_ids.size();
     int num_tasks = flexible_task_ids.size();
@@ -203,10 +213,11 @@ void schedule_plan_flow(int time_limit, std::vector<int> & proposed_schedule,  S
     {
         final_supply = num_tasks; // Source supplies tasks
     }
-    else if (num_tasks > env->task_assign_active_agents && env->task_assign_active_agents > 0)
+    else if (final_supply > env->task_assign_active_agents - env->num_of_agents + flexible_agent_ids.size() && env->task_assign_active_agents > 0)
     {
-        final_supply = env->task_assign_active_agents; // Source supplies tasks
+        final_supply = env->task_assign_active_agents - env->num_of_agents + flexible_agent_ids.size(); // Source supplies tasks
     }
+    cout<<"final supply: "<<final_supply<<endl;
     // Set supply/demand values
     supply[source] = final_supply; // Source supplies workers
     supply[sink] = -final_supply;  // Sink absorbs tasks
