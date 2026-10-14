@@ -15,6 +15,8 @@ public:
     int commit_window = 1;
     int time_in_commit_window = 0;
 
+    int task_assign_active_agents = -1; // the number of active agents, -1 means all agents are active
+
 	Entry(SharedEnvironment* env): env(env)
     {
         planner = new MAPFPlanner(env);

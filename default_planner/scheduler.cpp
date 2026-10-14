@@ -197,16 +197,19 @@ void schedule_plan_flow(int time_limit, std::vector<int> & proposed_schedule,  S
         node_to_maploc[id] = i;
         maploc_to_node[i] = id;
     } 
-
-    // Set supply/demand values
-    supply[source] = num_workers; // Source supplies workers
-    supply[sink] = -num_workers;  // Sink absorbs tasks
-
+    
+    int supply = num_workers; // Source supplies workers
     if (num_workers > num_tasks)
     {
-        supply[source] = num_tasks; // Source supplies tasks
-        supply[sink] = -num_tasks;  // Sink absorbs tasks
+        supply = num_tasks; // Source supplies tasks
     }
+    else if (num_tasks > env->task_assign_active_agents && env->task_assign_active_agents > 0)
+    {
+        supply = env->task_assign_active_agents; // Source supplies tasks
+    }
+    // Set supply/demand values
+    supply[source] = supply; // Source supplies workers
+    supply[sink] = -supply;  // Sink absorbs tasks
 
     for (int i = 0; i < num_workers; ++i) supply[map_nodes[i]] = 0;
 

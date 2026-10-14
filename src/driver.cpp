@@ -55,7 +55,8 @@ int main(int argc, char **argv)
         ("useTraffic,u", po::value<bool>()->default_value(false), "use of traffic in scheduling")
         ("assignNew,n", po::value<bool>()->default_value(false), "wether new agents only or allow task swapping")
         ("scheduleModel,m", po::value<int>()->default_value(1), "scheduler model, 1- flow, 2- flow with history edge cost, 3- greedy")
-        ("commitWindow,w", po::value<int>()->default_value(1), "commit window");
+        ("commitWindow,w", po::value<int>()->default_value(1), "commit window")
+        ("activeAgents,a", po::value<int>()->default_value(-1), "the number of active agents, -1 means all agents are active");
     clock_t start_time = clock();
     po::store(po::parse_command_line(argc, argv, desc), vm);
 
@@ -121,6 +122,7 @@ int main(int argc, char **argv)
     Grid grid(base_folder + map_path);
 
     planner->env->map_name = map_path.substr(map_path.find_last_of("/") + 1);
+    planner->env->task_assign_active_agents = vm["activeAgents"].as<int>();
 
 
     string file_storage_path = vm["fileStoragePath"].as<std::string>();
