@@ -21,6 +21,7 @@ void schedule_plan_raw(int time_limit, std::vector<int> & proposed_schedule,  Sh
 void schedule_plan_matching(int time_limit, std::vector<int> & proposed_schedule,  SharedEnvironment* env, std::vector<Double4> background_flow, bool use_traffic, bool new_only, int maximum_edges);
 void schedule_plan_flow(int time_limit, std::vector<int> & proposed_schedule,  SharedEnvironment* env, std::vector<Double4> background_flow, bool use_traffic, bool new_only);
 void schedule_plan_flow_dummy(int time_limit, SharedEnvironment* env, std::vector<Double4> background_flow, bool use_traffic, bool new_only);
+void schedule_plan_flow_dummy_all(int time_limit, SharedEnvironment* env, std::vector<Double4> background_flow, bool use_traffic, bool new_only);
 void schedule_plan_h(int time_limit, std::vector<int> & proposed_schedule,  SharedEnvironment* env, bool new_only);
 
 void schedule_plan_flow_hist(int time_limit, std::vector<int> & proposed_schedule,  SharedEnvironment* env, std::vector<pair<double,double>>& background_flow, bool new_only);
@@ -32,6 +33,7 @@ bool isTaskNode(ListDigraph::Node node, ListDigraph& g, ListDigraph::Node sink);
 unordered_map<int,list<int>> get_guide_path();
 const std::vector<std::tuple<int,int>>& get_map_clearance();
 const std::vector<int>& get_sorted_cell_ids_by_clearance();
+void refresh_sorted_cells_by_clearance(const SharedEnvironment* env, int min_clearance_threshold = 1);
 
 }
 
