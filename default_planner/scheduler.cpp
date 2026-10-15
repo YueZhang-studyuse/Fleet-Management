@@ -704,7 +704,7 @@ void schedule_plan_flow_dummy(int time_limit, SharedEnvironment* env, std::vecto
     assert(static_cast<int>(sorted_cell_ids_by_clearance.size()) == static_cast<int>(env->map.size()));
 
     std::vector<int> selected_targets;
-    int selected_target_size = std::max(static_cast<int>(dummy_agent_ids.size()*1.1), sorted_cell_ids_by_clearance.size());
+    int selected_target_size = std::max(static_cast<int>(dummy_agent_ids.size()*1.1), static_cast<int>(sorted_cell_ids_by_clearance.size()));
     selected_targets.reserve(selected_target_size);
     for (int cell_id : sorted_cell_ids_by_clearance)
     {
@@ -1124,7 +1124,7 @@ void schedule_plan_flow_dummy_all(int time_limit, SharedEnvironment* env, std::v
     refresh_sorted_cells_by_clearance(env, 1);
 
     std::vector<int> selected_targets;
-    int selected_target_size = static_cast<int>sorted_cell_ids_by_clearance.size();
+    int selected_target_size = static_cast<int>(sorted_cell_ids_by_clearance.size());
     selected_targets.reserve(selected_target_size);
     for (int cell_id : sorted_cell_ids_by_clearance)
     {
