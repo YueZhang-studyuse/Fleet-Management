@@ -32,10 +32,6 @@ SCHEDULE_MODELS = [1]          # -m / --scheduleModel
 COMMIT_WINDOWS = [1]                 # -w / --commitWindow
 USE_TRAFFIC_VALUES = [True]   # -u / --useTraffic
 
-# -a / --activeAgents offsets below the agent count XXX in WS_XXX_YYY.json.
-# ACTIVE_AGENT_OFFSETS = [40, 20, 0]
-ACTIVE_AGENT_OFFSETS = [0]
-
 # Set True if you want to keep running after a failed command.
 CONTINUE_ON_ERROR = False
 
@@ -52,11 +48,6 @@ def main() -> int:
         choices=DOMAIN_PREFIXES,
         default=["warehouseSmall"],
         help="Domains to run (default: warehouseSmall).",
-    )
-    parser.add_argument(
-        "--skipLess",
-        action="store_true",
-        help="Skip cases where team size (activeAgents) <= task reveal.",
     )
     args = parser.parse_args()
     domains = list(dict.fromkeys(args.domains))
@@ -94,23 +85,7 @@ def main() -> int:
     jobs = []
     for domain, instance_files in instances_by_domain.items():
         for instance in instance_files:
-            parts = instance.stem.split("_")
-            agent_count = int(parts[2]) if len(parts) == 3 and parts[2].isdigit() else None
-            active_list = (
-                [agent_count - off for off in ACTIVE_AGENT_OFFSETS if agent_count > off]
-                if agent_count is not None
-                else []
-            )
-            if not active_list:
-                print(f"Skipping {instance.name}: cannot derive activeAgents")
-                continue
-            # Instance name is <domain>_<taskReveal>_<teamSize>.
-            reveal = int(parts[1]) if parts[1].isdigit() else None
-            for active in active_list:
-                if args.skipLess and reveal is not None and active <= reveal:
-                    print(f"Skipping {instance.name} a={active}: team size <= task reveal {reveal}")
-                    continue
-                jobs.append((domain, instance, active))
+            jobs.append((domain, instance))
 
     total_runs = len(jobs) * len(combos)
     failures = 0
@@ -120,12 +95,12 @@ def main() -> int:
     print(f"Domains: {', '.join(domains)}")
     for domain in domains:
         print(f"Run folder: {OUTPUT_ROOT / f'{domain}_sweep' / EXPERIMENT_NAME}")
-    print(f"Instance/activeAgents jobs: {len(jobs)}")
+    print(f"Instance jobs: {len(jobs)}")
     print(f"Option combinations: {len(combos)}")
     print(f"Total runs: {total_runs}")
 
     # Sequential execution in the main thread: one command at a time.
-    for domain, instance, active in jobs:
+    for domain, instance in jobs:
         run_root = OUTPUT_ROOT / f"{domain}_sweep" / EXPERIMENT_NAME
         json_dir = run_root / "json"
         log_dir = run_root / "logs"
@@ -135,7 +110,7 @@ def main() -> int:
         for model, window, use_traffic in combos:
             run_idx += 1
             run_tag = (
-                f"{instance.stem}__a{active}_m{model}_w{window}_u{int(use_traffic)}"
+                f"{instance.stem}_m{model}_w{window}_u{int(use_traffic)}"
             )
             out_file = json_dir / f"{run_tag}.json"
             log_file = log_dir / f"{run_tag}.log"
@@ -163,13 +138,11 @@ def main() -> int:
                 str(window),
                 "-u",
                 tf(use_traffic),
-                "-a",
-                str(active),
             ]
 
             print(
                 f"[{run_idx}/{total_runs}] {instance.name} "
-                f"a={active} m={model} w={window} u={int(use_traffic)}"
+                f"m={model} w={window} u={int(use_traffic)}"
             )
             with cout_file.open("w", encoding="utf-8") as fout:
                 result = subprocess.run(
