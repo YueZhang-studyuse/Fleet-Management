@@ -55,6 +55,7 @@ int main(int argc, char **argv)
         ("useTraffic,u", po::value<bool>()->default_value(false), "use of traffic in scheduling")
         ("assignNew,n", po::value<bool>()->default_value(false), "wether new agents only or allow task swapping")
         ("scheduleModel,m", po::value<int>()->default_value(1), "scheduler model, 1- flow, 2- flow with history edge cost, 3- greedy")
+        ("parkingModel", po::value<int>()->default_value(1), "parking model, 1- random loc, 2- current loc, 3- clerance (pre-select) 4- clearance(dynamic)")
         ("commitWindow,w", po::value<int>()->default_value(1), "commit window");
     clock_t start_time = clock();
     po::store(po::parse_command_line(argc, argv, desc), vm);
@@ -138,6 +139,7 @@ int main(int argc, char **argv)
       logger->log_warning(stringStream.str());
     }
     planner->env->file_storage_path = file_storage_path;
+    planner->env->parking_model = vm["parkingModel"].as<int>();
 
     planner->scheduler->set_use_traffic(vm["useTraffic"].as<bool>());
     planner->scheduler->set_new_only(vm["assignNew"].as<bool>());

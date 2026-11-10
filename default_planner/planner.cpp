@@ -7,6 +7,7 @@
 #include "scheduler.h"
 #include <numeric>
 #include <limits>
+#include <stdexcept>
 #include <tuple>
 
 
@@ -27,6 +28,39 @@ namespace DefaultPlanner{
     std::vector<int> dummy_goals;
     std::mt19937 mt1;
     TrajLNS trajLNS;
+
+    void init_parking_random(SharedEnvironment* env)
+    {
+        std::vector<int> available_locations;
+        for (size_t loc = 0; loc < env->map.size(); ++loc)
+        {
+            if (env->map[loc] != 1)
+                available_locations.push_back(static_cast<int>(loc));
+        }
+
+        std::shuffle(available_locations.begin(), available_locations.end(), mt1);
+        dummy_goals.assign(available_locations.begin(), available_locations.begin() + env->num_of_agents);
+    }
+
+    void init_parking_clearance(SharedEnvironment* env)
+    {
+        std::vector<int> parking_locations;
+        parking_locations.reserve(env->num_of_agents);
+        for (int loc : get_sorted_cell_ids_by_clearance())
+        {
+            if (parking_locations.size() == static_cast<size_t>(env->num_of_agents))
+                break;
+            if (loc < 0 || static_cast<size_t>(loc) >= env->map.size())
+                throw std::runtime_error("Invalid cell in parking ranking");
+            if (env->map[loc] != 1)
+                parking_locations.push_back(loc);
+        }
+
+        if (parking_locations.size() != static_cast<size_t>(env->num_of_agents))
+            throw std::runtime_error("Not enough ranked free locations for parking goals");
+
+        dummy_goals = std::move(parking_locations);
+    }
 
     std::vector<Double4> get_opened_flow(SharedEnvironment* env)
     {
@@ -95,8 +129,17 @@ namespace DefaultPlanner{
                 p[ids[i]] = ((double)(ids.size() - i))/((double)(ids.size()+1));
             }
             p_copy = p;
+            if (env->parking_model == 1)
+            {
+                init_parking_random(env);
+            }
+            else if (env->parking_model == 3)
+            {
+                init_parking_clearance(env);
+            }
             return;
     };
+    
 
     /**
      * @brief Default planner plan function
@@ -129,49 +172,6 @@ namespace DefaultPlanner{
         decision.clear();
         decision.resize(env->map.size(), -1);
 
-        // if (env->curr_timestep == 0)
-        // {
-        //     dummy_goals.assign(env->num_of_agents, -1);
-
-        //     const std::vector<int>& sorted_cells = get_sorted_cell_ids_by_clearance();
-
-        //     std::vector<int> traversable_cells;
-        //     traversable_cells.reserve(env->map.size());
-        //     for (int loc : sorted_cells)
-        //     {
-        //         if (loc >= 0 && loc < env->map.size() && env->map[loc] != 1)
-        //             traversable_cells.push_back(loc);
-        //     }
-
-        //     std::vector<int> agent_order;
-        //     agent_order.resize(env->num_of_agents);
-        //     std::iota(agent_order.begin(), agent_order.end(), 0);
-
-        //     std::vector<bool> goal_used(env->map.size(), false);
-        //     int cell_ptr = 0;
-        //     for (int agent_id : agent_order)
-        //     {
-        //         while (cell_ptr < static_cast<int>(traversable_cells.size()) && goal_used[traversable_cells[cell_ptr]])
-        //             ++cell_ptr;
-
-        //         if (cell_ptr < static_cast<int>(traversable_cells.size()))
-        //         {
-        //             int goal = traversable_cells[cell_ptr++];
-        //             dummy_goals[agent_id] = goal;
-        //             goal_used[goal] = true;
-        //         }
-        //         else
-        //         {
-        //             int fallback_goal = env->curr_states[agent_id].location;
-        //             if (fallback_goal >= 0 && fallback_goal < env->map.size() && env->map[fallback_goal] != 1 && !goal_used[fallback_goal])
-        //             {
-        //                 dummy_goals[agent_id] = fallback_goal;
-        //                 goal_used[fallback_goal] = true;
-        //             }
-        //         }
-        //     }
-        // }
-
         // update the status of each agent and prepare for planning
         int count = 0;
         for(int i=0; i<env->num_of_agents; i++)
@@ -188,15 +188,6 @@ namespace DefaultPlanner{
                         }
                 }
 
-                // if (env->goal_locations[i].empty() && i < dummy_goals.size() && dummy_goals[i] != -1)
-                // {
-                //     int dummy_goal_loc = dummy_goals[i];
-                //     if (trajLNS.heuristics.at(dummy_goal_loc).empty())
-                //     {
-                //         init_heuristic(trajLNS.heuristics[dummy_goal_loc], env, dummy_goal_loc);
-                //         count++;
-                //     }
-                // }
             }
 
             prev_states[i] = env->curr_states[i];
@@ -206,55 +197,23 @@ namespace DefaultPlanner{
             // check if the agent need a guide path update, when the agent has no guide path or the guide path does not end at the goal location
             require_guide_path[i] = false;
             
-            // // set the goal location of each agent
-            // if (env->goal_locations[i].empty())
-            // {
-            //     // assign pre-selected high-clearance dummy goals when no real task goal exists
-            //     if (i < dummy_goals.size() && dummy_goals[i] != -1)
-            //         trajLNS.tasks[i] = dummy_goals[i];
-            //     else
-            //         trajLNS.tasks[i] = env->curr_states[i].location;
-            //     //set the pririty to 0
-            //     p[i] = 0;
-            //     // //remove the trajectory of the agent 
-            //     if (!trajLNS.trajs[i].empty())
-            //         remove_traj(trajLNS, i);
-            //     //add its current position as the trajectory of the agent
-            //     trajLNS.trajs[i].clear();
-            //     // trajLNS.trajs[i].push_back(env->curr_states[i].location);
-            //     // add_traj(trajLNS,i);
-            //     // update_dist_2_path(trajLNS,i);
-            // }
-            // else
-            // {
-            //     trajLNS.tasks[i] = env->goal_locations[i].front().first;
-            //     if (trajLNS.trajs[i].empty() || trajLNS.trajs[i].back() != trajLNS.tasks[i])
-            //     {
-            //         require_guide_path[i] = true;
-            //         p[i] = p_copy[i];
-            //     }
-            //     else
-            //     {
-            //         p[i] = p[i]+1;
-            //     }
-            //     if (trajLNS.neighbors[env->curr_states[i].location].size() == 1){
-            //         p[i] = p[i] + 10;
-            //     }
-            // }
-
-            // set the goal location of each agent
-            // if (env->goal_locations[i].empty()){
-            //     if (i < dummy_goals.size() && dummy_goals[i] != -1)
-            //         trajLNS.tasks[i] = dummy_goals[i];
-            //     else
-            //         trajLNS.tasks[i] = env->curr_states[i].location;
-            // }
             if (env->goal_locations[i].empty())
             {
-                if (env->dummy_parking_allocation.find(i) != env->dummy_parking_allocation.end() && !env->dummy_parking_allocation[i].empty())
-                    trajLNS.tasks[i] = env->dummy_parking_allocation[i].front();
-                else
+                if (env->parking_model == 1 || env->parking_model == 3)
+                {
+                    trajLNS.tasks[i] = dummy_goals.at(i);
+                }
+                else if (env->parking_model == 2)
+                {
                     trajLNS.tasks[i] = env->curr_states[i].location;
+                }
+                else if (env->parking_model == 4)
+                {
+                    if (env->dummy_parking_allocation.find(i) != env->dummy_parking_allocation.end() && !env->dummy_parking_allocation[i].empty())
+                        trajLNS.tasks[i] = env->dummy_parking_allocation[i].front();
+                    else
+                        trajLNS.tasks[i] = env->curr_states[i].location;
+                }
             }
             else{
                 trajLNS.tasks[i] = env->goal_locations[i].front().first;
@@ -354,14 +313,8 @@ namespace DefaultPlanner{
         TimePoint end_time = start_time + std::chrono::milliseconds(time_limit - pibt_time - TRAFFIC_FLOW_ASSIGNMENT_END_TIME_TOLERANCE); 
         cout << "plan limit " << time_limit <<endl;
 
-        // recrod the initial location of each agent as dummy goals in case no goal is assigned to the agent.
-        if (env->curr_timestep == 0){
-            dummy_goals.resize(env->num_of_agents);
-            for(int i=0; i<env->num_of_agents; i++)
-            {
-                dummy_goals.at(i) = env->curr_states.at(i).location;
-            }
-        }
+        if (env->curr_timestep == 0)
+            init_parking_random(env);
 
         // data sturcture for record the previous decision of each agent
         prev_decision.clear();

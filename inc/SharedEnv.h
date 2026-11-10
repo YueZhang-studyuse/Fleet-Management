@@ -43,4 +43,7 @@ public:
     // vector<pair<int,int>> past_waitings;
     vector<pair<double,double>> past_waitings;
     vector<int> accu_waitings;
+
+    //configurations
+    int parking_model = 1; // 1- start loc, 2- current loc, 3- clerance (pre-select) 4- clearance(dynamic)
 };
