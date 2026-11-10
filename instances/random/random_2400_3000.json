@@ -1,0 +1,8 @@
+{
+    "mapFile": "maps/random-64-64-20.map",
+    "agentFile": "agents/random_3000.agents",
+    "teamSize": 3000,
+    "taskFile": "tasks/random.tasks",
+    "numTasksReveal": 2400,
+    "version": "2024 LoRR"
+}
