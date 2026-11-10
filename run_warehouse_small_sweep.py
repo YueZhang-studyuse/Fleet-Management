@@ -53,7 +53,13 @@ def main() -> int:
         default=["warehouseSmall"],
         help="Domains to run (default: warehouseSmall).",
     )
-    domains = list(dict.fromkeys(parser.parse_args().domains))
+    parser.add_argument(
+        "--skipLess",
+        action="store_true",
+        help="Skip cases where team size (activeAgents) <= task reveal.",
+    )
+    args = parser.parse_args()
+    domains = list(dict.fromkeys(args.domains))
 
     if not EXE_PATH.exists():
         print(f"Executable not found: {EXE_PATH}", file=sys.stderr)
@@ -98,7 +104,12 @@ def main() -> int:
             if not active_list:
                 print(f"Skipping {instance.name}: cannot derive activeAgents")
                 continue
+            # Instance name is <domain>_<taskReveal>_<teamSize>.
+            reveal = int(parts[1]) if parts[1].isdigit() else None
             for active in active_list:
+                if args.skipLess and reveal is not None and active <= reveal:
+                    print(f"Skipping {instance.name} a={active}: team size <= task reveal {reveal}")
+                    continue
                 jobs.append((domain, instance, active))
 
     total_runs = len(jobs) * len(combos)
