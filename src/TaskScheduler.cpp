@@ -40,6 +40,10 @@ void TaskScheduler::plan(int time_limit, std::vector<int> & proposed_schedule)
     {
         DefaultPlanner::schedule_plan_flow_dummy(limit, env, background_flow, use_traffic, new_only);
     }
+    else if (env->parking_model == 5) 
+    {
+        DefaultPlanner::schedule_plan_flow_dummy_all(limit, env, background_flow, use_traffic, new_only);
+    }
 }
 
 void TaskScheduler::set_flow(std::vector<DefaultPlanner::Double4> flow)

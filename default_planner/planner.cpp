@@ -207,7 +207,7 @@ namespace DefaultPlanner{
                 {
                     trajLNS.tasks[i] = env->curr_states[i].location;
                 }
-                else if (env->parking_model == 4)
+                else if (env->parking_model == 4 || env->parking_model == 5)
                 {
                     if (env->dummy_parking_allocation.find(i) != env->dummy_parking_allocation.end() && !env->dummy_parking_allocation[i].empty())
                         trajLNS.tasks[i] = env->dummy_parking_allocation[i].front();
