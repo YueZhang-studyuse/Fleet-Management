@@ -830,6 +830,7 @@ void schedule_plan_flow_dummy(int time_limit, SharedEnvironment* env, std::vecto
         assert(start_loc >= 0 && start_loc < static_cast<int>(env->map.size()));
         ListDigraph::Node current = map_nodes[start_loc];
         list<int> path;
+        int cost = 0;
 
         while (node_to_target_loc.find(lemon::ListDigraphBase::id(current)) == node_to_target_loc.end())
         {
@@ -838,6 +839,7 @@ void schedule_plan_flow_dummy(int time_limit, SharedEnvironment* env, std::vecto
 
             int loc = node_to_maploc[lemon::ListDigraphBase::id(current)];
             path.push_back(loc);
+            cost++;
 
             bool found = false;
             for (ListDigraph::OutArcIt arc(g, current); arc != INVALID; ++arc)
@@ -867,9 +869,10 @@ void schedule_plan_flow_dummy(int time_limit, SharedEnvironment* env, std::vecto
         {
             int target_loc = node_to_target_loc[lemon::ListDigraphBase::id(current)];
             path.push_back(target_loc);
+            cost++;
             agent_guide_path[agent_id] = path;
             env->dummy_parking_allocation[agent_id] = {target_loc};
-            //cout << "Agent " << agent_id << " is assigned to dummy parking location " << target_loc << " with clearance of " << std::get<0>(map_clearance[target_loc]) << endl;
+            //cout << "Agent " << agent_id << " is assigned to dummy parking location " << target_loc << " with clearance of " << std::get<0>(map_clearance[target_loc])<<" and cost of " << cost << endl;
         }
     }
 
@@ -1258,6 +1261,7 @@ void schedule_plan_flow_dummy_all(int time_limit, SharedEnvironment* env, std::v
         assert(start_loc >= 0 && start_loc < static_cast<int>(env->map.size()));
         ListDigraph::Node current = map_nodes[start_loc];
         list<int> path;
+        int cost = 0;
 
         while (node_to_target_loc.find(lemon::ListDigraphBase::id(current)) == node_to_target_loc.end())
         {
@@ -1266,6 +1270,7 @@ void schedule_plan_flow_dummy_all(int time_limit, SharedEnvironment* env, std::v
 
             int loc = node_to_maploc[lemon::ListDigraphBase::id(current)];
             path.push_back(loc);
+            cost++;
 
             bool found = false;
             for (ListDigraph::OutArcIt arc(g, current); arc != INVALID; ++arc)
@@ -1297,7 +1302,8 @@ void schedule_plan_flow_dummy_all(int time_limit, SharedEnvironment* env, std::v
             path.push_back(target_loc);
             agent_guide_path[agent_id] = path;
             env->dummy_parking_allocation[agent_id] = {target_loc};
-            //cout << "Agent " << agent_id << " is assigned to dummy parking location " << target_loc << " with clearance of " << std::get<0>(map_clearance[target_loc]) << endl;
+            cost++;
+            //cout << "Agent " << agent_id << " is assigned to dummy parking location " << target_loc << " with clearance of " << std::get<0>(map_clearance[target_loc]) << " and cost of " << cost << endl;
         }
     }
 
@@ -1305,51 +1311,6 @@ void schedule_plan_flow_dummy_all(int time_limit, SharedEnvironment* env, std::v
     double elapsed_time = std::chrono::duration<double>(end_time - start_time).count();
     cout << "Dummy parking flow solving time: " << elapsed_time << " seconds" << endl;
 
-}
-
-
-
-void printDIMACS(ListDigraph& g, 
-                 ListDigraph::Node source, 
-                 ListDigraph::Node sink, 
-                 vector<ListDigraph::Node>& workers, 
-                 vector<ListDigraph::Node>& tasks, 
-                 ListDigraph::ArcMap<int>& capacity, 
-                 ListDigraph::ArcMap<double>& cost) 
-{
-    int num_workers = workers.size();
-    int num_tasks = tasks.size();
-    int num_nodes = 2 + num_workers + num_tasks; // source, sink, workers, tasks
-    int num_arcs = num_workers + num_tasks + (num_workers * num_tasks); // source→workers + tasks→sink + workers→tasks
-
-    // Print problem line
-    cout << "p min " << num_nodes << " " << num_arcs << endl;
-
-    // Print node descriptors
-    cout << "n 1 " << num_workers << "   c Source (supplies workers)" << endl;
-    cout << "n " << num_nodes << " -" << num_workers << "   c Sink (absorbs workers)" << endl;
-
-    // Print arcs (Source → Workers)
-    for (int i = 0; i < num_workers; ++i) {
-        cout << "a 1 " << (i + 2) << " 0 1 0   c Source to Worker " << (i + 1) << endl;
-    }
-
-    // Print arcs (Workers → Tasks)
-    for (int i = 0; i < num_workers; ++i) {
-        for (int j = 0; j < num_tasks; ++j) {
-            ListDigraph::Arc a = findArc(g, workers[i], tasks[j]);
-            if (a == INVALID) continue; // Skip if no valid edge
-
-            cout << "a " << (i + 2) << " " << (num_workers + j + 2) << " 0 " 
-                 << capacity[a] << " " << cost[a] 
-                 << "   c Worker " << (i + 1) << " to Task " << (j + 1) << endl;
-        }
-    }
-
-    // Print arcs (Tasks → Sink)
-    for (int j = 0; j < num_tasks; ++j) {
-        cout << "a " << (num_workers + j + 2) << " " << num_nodes << " 0 1 0   c Task " << (j + 1) << " to Sink" << endl;
-    }
 }
 
 
