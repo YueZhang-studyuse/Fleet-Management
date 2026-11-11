@@ -49,6 +49,11 @@ def main() -> int:
         default=["warehouseSmall"],
         help="Domains to run (default: warehouseSmall).",
     )
+    parser.add_argument(
+        "--skipLess",
+        action="store_true",
+        help="Skip cases where team size <= task reveal.",
+    )
     args = parser.parse_args()
     domains = list(dict.fromkeys(args.domains))
 
@@ -85,6 +90,13 @@ def main() -> int:
     jobs = []
     for domain, instance_files in instances_by_domain.items():
         for instance in instance_files:
+            # Instance name is <domain>_<taskReveal>_<teamSize>.
+            parts = instance.stem.split("_")
+            if args.skipLess and len(parts) == 3 and parts[1].isdigit() and parts[2].isdigit():
+                reveal, team_size = int(parts[1]), int(parts[2])
+                if team_size <= reveal:
+                    print(f"Skipping {instance.name}: team size {team_size} <= task reveal {reveal}")
+                    continue
             jobs.append((domain, instance))
 
     total_runs = len(jobs) * len(combos)
