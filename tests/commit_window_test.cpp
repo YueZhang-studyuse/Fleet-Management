@@ -1,9 +1,18 @@
 #include "CompetitionSystem.h"
 #include <climits>
+#include <cmath>
 #include <filesystem>
 #include <functional>
+#include <limits>
+#include <set>
 #include <stdexcept>
 #include <thread>
+
+// Exercise the internal conversion boundary without exposing it in the public
+// scheduler API or constructing a huge flow graph.
+namespace DefaultPlanner {
+long long scale_parking_arc_cost(double unscaled, double safe_scaled_cost);
+}
 
 namespace {
 void check(bool condition, const char* message)
@@ -383,6 +392,200 @@ void test_invalid_parameters()
         check(threw, "invalid window/budget accepted");
     }
 }
+
+void test_clearance_preprocessing()
+{
+    SharedEnvironment env;
+    env.rows = 3;
+    env.cols = 6;
+    env.map.assign(18, 0);
+    env.num_of_agents = 2;
+    env.curr_states = {State(0, 0, 0), State(5, 0, 0)};
+    env.curr_task_schedule = {0, -1};
+    env.task_pool.emplace(0, Task(0, {1}, 0));
+    env.task_pool.at(0).agent_assigned = 0;
+    const vector<DefaultPlanner::Double4> flow(18, DefaultPlanner::Double4{0, 0, 0, 0});
+
+    // Legacy clearance modes must still be ready before planner initialization.
+    vector<std::tuple<int, int>> expected_clearance;
+    vector<int> expected_ranking;
+    for (int model : {3, 4, 5})
+    {
+        env.parking_model = model;
+        DefaultPlanner::schedule_initialize(1000, &env);
+        check(DefaultPlanner::get_map_clearance().size() == env.map.size(),
+              "clearance mode was not preprocessed");
+        check(DefaultPlanner::get_sorted_cell_ids_by_clearance().size() == env.map.size(),
+              "clearance parking ranking is missing");
+        if (model == 3)
+        {
+            expected_clearance = DefaultPlanner::get_map_clearance();
+            expected_ranking = DefaultPlanner::get_sorted_cell_ids_by_clearance();
+        }
+    }
+
+    for (int model : {1, 2, 6})
+    {
+        env.parking_model = model;
+        DefaultPlanner::schedule_initialize(1000, &env);
+        check(DefaultPlanner::get_map_clearance().empty() &&
+              DefaultPlanner::get_sorted_cell_ids_by_clearance().empty(),
+              "non-clearance mode still builds a clearance table");
+    }
+    DefaultPlanner::schedule_plan_flow_dummy_traffic(100, &env, flow, false, false, 0.1);
+    check(DefaultPlanner::get_map_clearance().empty(), "traffic-only parking computes clearance");
+    check(env.dummy_parking_allocation.at(1) == vector<int>({5}), "zero-traffic parking should allow staying");
+
+    DefaultPlanner::schedule_plan_flow_dummy_combined(100, &env, flow, false, false, 16, 0, 0.01);
+    DefaultPlanner::schedule_plan_flow_dummy_combined(100, &env, flow, false, false, 0, 1, 0.01);
+    check(DefaultPlanner::get_map_clearance().empty(), "zero clearance weight still builds the table");
+    check(env.dummy_parking_allocation.at(1) == vector<int>({5}), "zero destination penalty should allow staying");
+
+    DefaultPlanner::schedule_plan_flow_dummy_combined(100, &env, flow, false, false, 16, 1, 0.01);
+    check(DefaultPlanner::get_map_clearance() == expected_clearance &&
+          DefaultPlanner::get_sorted_cell_ids_by_clearance() == expected_ranking,
+          "lazy clearance differs from upfront preprocessing");
+    check(env.curr_task_schedule == vector<int>({0, -1}) && env.dummy_parking_allocation.at(1)[0] != 1,
+          "lazy parking changed task assignments or parked on a protected goal");
+
+    // A joint flow assigning every flexible agent to a task needs no parking scores.
+    DefaultPlanner::schedule_initialize(1000, &env);
+    env.curr_task_schedule = {-1, -1};
+    env.task_pool.at(0).agent_assigned = -1;
+    env.task_pool.emplace(1, Task(1, {4}, 0));
+    vector<int> schedule;
+    DefaultPlanner::schedule_plan_flow_joint_task_parking(100, schedule, &env, flow, false, false);
+    check(schedule[0] >= 0 && schedule[1] >= 0 && DefaultPlanner::get_map_clearance().empty(),
+          "joint task-only assignment unnecessarily computes clearance");
+
+    // Removing a task introduces a parking demand, which activates lazy clearance.
+    env.task_pool.erase(1);
+    env.curr_task_schedule = {-1, -1};
+    DefaultPlanner::schedule_plan_flow_joint_task_parking(100, schedule, &env, flow, false, false);
+    check(DefaultPlanner::get_map_clearance() == expected_clearance &&
+          env.dummy_parking_allocation.size() == 1,
+          "joint parking did not initialize clearance on first use");
+}
+void test_parking_cost_validation()
+{
+    using DefaultPlanner::scale_parking_arc_cost;
+    const double inf = std::numeric_limits<double>::infinity();
+    const double nan = std::numeric_limits<double>::quiet_NaN();
+    const double largest = std::numeric_limits<double>::max();
+    check(scale_parking_arc_cost(0, 1000) == 0 &&
+          scale_parking_arc_cost(1, 1000) == 100 &&
+          scale_parking_arc_cost(1.234, 1000) == 123 &&
+          scale_parking_arc_cost(1.236, 1000) == 124 &&
+          scale_parking_arc_cost(9.99, 1000) == 999,
+          "parking cost scaling does not use nearest-hundredth precision");
+    for (auto values : vector<pair<double, double>>{
+             {-1, 1000}, {inf, 1000}, {nan, 1000}, {largest, 1000},
+             {10, 1000}, {9.996, 1000}, // Exact bound and rounding up to it.
+             {1, 0}, {1, -1}, {1, inf}, {1, nan},
+             {static_cast<double>(LLONG_MAX) / 100, largest}})
+    {
+        bool rejected = false;
+        try { scale_parking_arc_cost(values.first, values.second); }
+        catch (const std::invalid_argument&) { rejected = true; }
+        catch (const std::overflow_error&) { rejected = true; }
+        check(rejected, "invalid or oversized parking cost accepted");
+    }
+
+    SharedEnvironment env;
+    env.rows = 3;
+    env.cols = 6;
+    env.map.assign(18, 0);
+    env.num_of_agents = 1;
+    env.curr_states = {State(0, 0, 0)};
+    env.curr_task_schedule = {-1};
+    env.dummy_parking_allocation = {{0, {7}}};
+    const vector<DefaultPlanner::Double4> flow(18, DefaultPlanner::Double4{1, 0, 0, 0});
+    const auto original_parking = env.dummy_parking_allocation;
+    const auto original_guides = DefaultPlanner::get_guide_path();
+    for (bool joint : {false, true})
+    for (auto weights : vector<vector<double>>{
+             {-1, 1, 0.01}, {nan, 1, 0.01}, {inf, 1, 0.01},
+             {16, -1, 0.01}, {16, nan, 0.01}, {16, inf, 0.01},
+             {16, 1, -1}, {16, 1, nan}, {16, 1, inf},
+             {1e16, 0, 1}, // Finite and representable, but exceeds solver bound.
+             {largest, 0, 1}}) // Overflow during scaling.
+    {
+        vector<int> schedule = {-42};
+        bool rejected = false;
+        try
+        {
+            if (joint)
+                DefaultPlanner::schedule_plan_flow_joint_task_parking(
+                    100, schedule, &env, flow, false, false, weights[0], weights[1], weights[2]);
+            else
+                DefaultPlanner::schedule_plan_flow_dummy_combined(
+                    100, &env, flow, false, false, weights[0], weights[1], weights[2]);
+        }
+        catch (const std::invalid_argument&) { rejected = true; }
+        catch (const std::overflow_error&) { rejected = true; }
+        check(rejected, "parking API accepted invalid weights or excessive penalties");
+        check(schedule == vector<int>({-42}) && env.curr_task_schedule == vector<int>({-1}) &&
+              env.dummy_parking_allocation == original_parking &&
+              DefaultPlanner::get_guide_path() == original_guides,
+              "rejected parking costs partially changed assignments or guides");
+    }
+}
+
+void test_parking_model_dispatch()
+{
+    for (int model : {7, 8})
+    for (bool use_traffic : {false, true})
+    {
+        TaskScheduler scheduler;
+        auto& env = *scheduler.env;
+        env.rows = 3;
+        env.cols = 6;
+        env.map.assign(18, 0);
+        env.num_of_agents = 3;
+        env.parking_model = model;
+        env.curr_states = {State(0, 0, 0), State(5, 0, 0), State(17, 0, 0)};
+        env.curr_task_schedule = {0, -1, 1};
+        env.task_pool.emplace(0, Task(0, {5, 4}, 0));
+        env.task_pool.at(0).agent_assigned = 0;
+        env.task_pool.emplace(1, Task(1, {17, 16}, 0));
+        env.task_pool.at(1).agent_assigned = 2;
+        env.task_pool.at(1).idx_next_loc = 1;
+        scheduler.set_flow(vector<DefaultPlanner::Double4>(18, DefaultPlanner::Double4{0, 0, 0, 0}));
+        scheduler.set_use_traffic(use_traffic);
+        scheduler.initialize(1000);
+
+        vector<int> schedule;
+        scheduler.plan(1000, schedule);
+        check(schedule == vector<int>({-1, 0, 1}) && env.curr_task_schedule == schedule,
+              "new parking mode did not reassign an unopened task or preserve the opened task");
+        check(env.dummy_parking_allocation.size() == 1 && env.dummy_parking_allocation.count(0),
+              "new parking mode did not allocate parking to the idle agent");
+        const int parking = env.dummy_parking_allocation.at(0).at(0);
+        check(parking != 5 && parking != 16 &&
+              DefaultPlanner::get_guide_path().at(0).back() == parking,
+              "parking blocked a task target or its guide missed the assigned goal");
+
+        // All agents working: remove obsolete parking allocations.
+        env.curr_task_schedule = {-1, 0, 1};
+        env.task_pool.at(0).agent_assigned = 1;
+        env.task_pool.emplace(2, Task(2, {0, 1}, 0));
+        scheduler.plan(1000, schedule);
+        check(std::count(schedule.begin(), schedule.end(), -1) == 0 && schedule[2] == 1 &&
+              env.dummy_parking_allocation.empty(),
+              "new parking mode left an agent idle or retained stale parking with enough tasks");
+
+        // No tasks: every agent must receive a distinct parking destination.
+        env.task_pool.clear();
+        env.curr_task_schedule.assign(3, -1);
+        schedule.clear();
+        scheduler.plan(1000, schedule);
+        std::set<int> destinations;
+        for (const auto& allocation : env.dummy_parking_allocation)
+            destinations.insert(allocation.second.at(0));
+        check(schedule == vector<int>({-1, -1, -1}) && destinations.size() == 3,
+              "new parking mode failed when every agent was idle");
+    }
+}
 } // namespace
 
 int main()
@@ -401,6 +604,9 @@ int main()
         test_default_pibt_commits();
         test_native_batch_dispatch();
         test_invalid_parameters();
+        test_clearance_preprocessing();
+        test_parking_cost_validation();
+        test_parking_model_dispatch();
         std::cout << "All commit-window tests passed.\n";
     }
     catch (const std::exception& error)

@@ -15,18 +15,32 @@ using namespace lemon;
 
 namespace DefaultPlanner{
 
+// Precompute iterative clearance only for parking models 3, 4 and 5.
+// Combined parking APIs prepare it lazily if their active weights need it.
 void schedule_initialize(int preprocess_time_limit, SharedEnvironment* env);
 
+// new_only is reserved for future use; it currently has no effect in these APIs.
 void schedule_plan_flow(int time_limit, std::vector<int> & proposed_schedule,  SharedEnvironment* env, std::vector<Double4> background_flow, bool use_traffic, bool new_only);
 void schedule_plan_flow_dummy(int time_limit, SharedEnvironment* env, std::vector<Double4> background_flow, bool use_traffic, bool new_only);
 void schedule_plan_flow_dummy_all(int time_limit, SharedEnvironment* env, std::vector<Double4> background_flow, bool use_traffic, bool new_only, double B);
 void schedule_plan_flow_dummy_traffic(int time_limit, SharedEnvironment* env, std::vector<Double4> background_flow, bool use_traffic, bool new_only, double B_T);
+// Reset parking-related preprocessing between simulations.
+void reset_combined_parking_model();
+
+// Two-flow approach:
+// Run task assignment first, then assign parking goals to idle agents.
+void schedule_plan_flow_dummy_combined( int time_limit, SharedEnvironment* env, const std::vector<Double4>& background_flow, bool use_traffic, bool new_only, double B = 16.0, double b_c = 1.0, double b_t = 0.01);
+
+// One-flow approach:
+// Jointly assign tasks and parking goals.
+void schedule_plan_flow_joint_task_parking(int time_limit, std::vector<int>& proposed_schedule, SharedEnvironment* env, const std::vector<Double4>& background_flow, bool use_traffic, bool new_only, double B = 16.0, double b_c = 1.0, double b_t = 0.01);
 
 unordered_map<int,unordered_map<int,int>> compute_heuristics(SharedEnvironment* env, std::vector<Int4> background_flow, vector<pair<int,int>> current_id_assignment, unordered_map<int,list<int>> task_loc_ids, int max_num_tasks);
 void printDIMACS(ListDigraph& g, ListDigraph::Node source, ListDigraph::Node sink, vector<ListDigraph::Node>& workers, vector<ListDigraph::Node>& tasks, ListDigraph::ArcMap<int>& capacity, ListDigraph::ArcMap<double>& cost);
 bool isTaskNode(ListDigraph::Node node, ListDigraph& g, ListDigraph::Node sink);
 
 unordered_map<int,list<int>> get_guide_path();
+// Empty until clearance preprocessing has been requested for this simulation.
 const std::vector<std::tuple<int,int>>& get_map_clearance();
 const std::vector<int>& get_sorted_cell_ids_by_clearance();
 void refresh_sorted_cells_by_clearance(const SharedEnvironment* env, int min_clearance_threshold = 1);

@@ -2,9 +2,11 @@
 // #include "gurobi_c++.h"
 #include <algorithm>
 #include <boost/heap/pairing_heap.hpp>
+#include <cmath>
 #include <limits>
 #include <numeric>
 #include <queue>
+#include <stdexcept>
 #include <tuple>
 
 namespace DefaultPlanner{
@@ -20,6 +22,54 @@ std::vector<int> sorted_cell_clearance_levels;
 unordered_map<int,list<int>> agent_guide_path; //agent id, guide path from flow
 
 static double avg_task_step_cost_for_parking = 1.0;
+
+// Represent fractional parking costs to the nearest 0.01 cost unit.
+constexpr long long kParkingCostScale = 100LL;
+constexpr double kParkingGamma = 2.0;
+
+struct ParkingWeights {
+    double B;
+    double b_c;
+    double b_t;
+};
+
+// avg_task_step_cost_for_parking is the current mean for secondary parking,
+// or the last known mean for one-flow parking. Declared once above.
+
+// One immutable map per simulation. Initialized eagerly for clearance modes,
+// or on first use when a combined parking call enables its clearance term.
+static bool parking_clearance_ready = false;
+
+// Check a numeric cost before converting to a 64-bit LEMON arc cost.
+// Conservative bound protects network-simplex's accumulation of costs in
+// large instances. Exceeding it is a configuration error, not an invitation
+// to silently clamp a penalty (which would change the objective).
+long long scale_parking_arc_cost(double unscaled, double safe_scaled_cost)
+{
+    if (!std::isfinite(unscaled) || unscaled < 0.0)
+        throw std::invalid_argument("Parking arc cost must be finite and non-negative");
+    if (!std::isfinite(safe_scaled_cost) || safe_scaled_cost <= 0.0)
+        throw std::invalid_argument("Parking arc cost bound must be finite and positive");
+
+    const double scaled = unscaled * static_cast<double>(kParkingCostScale);
+    if (!std::isfinite(scaled))
+        throw std::overflow_error("Scaled parking arc cost is not finite");
+
+    // Round in floating point so out-of-range values never reach an integer
+    // conversion. Check the rounded value too: rounding can cross the bound.
+    const double rounded = std::round(scaled);
+    if (rounded >= safe_scaled_cost ||
+        rounded >= static_cast<double>(std::numeric_limits<long long>::max()))
+        throw std::overflow_error("Parking arc cost exceeds safe int64 range");
+    return static_cast<long long>(rounded);
+}
+
+static void validate_parking_weights(const ParkingWeights& weights)
+{
+    for (double value : {weights.B, weights.b_c, weights.b_t})
+        if (!std::isfinite(value) || value < 0.0)
+            throw std::invalid_argument("Parking weights must be finite and non-negative");
+}
 
 struct Node
 {
@@ -310,20 +360,19 @@ static void build_sort_clearance_with_update(const SharedEnvironment* env, int r
     }
 }
 
-void schedule_initialize(int preprocess_time_limit, SharedEnvironment* env)
+static void ensure_parking_clearance(const SharedEnvironment* env)
 {
-    // cout<<"schedule initialise limit" << preprocess_time_limit<<endl;
-    DefaultPlanner::init_heuristics(env);
-    mt.seed(0);
+    if (parking_clearance_ready)
+        return;
 
     const int rows = env->rows;
     const int cols = env->cols;
     const int map_size = static_cast<int>(env->map.size());
 
-    // build_sort_clearance(env, rows, cols);
     // Use iterative update mode: each selected top-clearance cell is blocked before
     // computing the next one, producing a spread-out clearance ranking.
     build_sort_clearance_with_update(env, rows, cols);
+    parking_clearance_ready = true;
 
     cout << "[DEBUG] Clearance table:" << endl;
     for (int r = 0; r < rows; ++r)
@@ -352,6 +401,57 @@ void schedule_initialize(int preprocess_time_limit, SharedEnvironment* env)
     cout << endl;
     return;
 }
+
+void schedule_initialize(int preprocess_time_limit, SharedEnvironment* env)
+{
+    DefaultPlanner::init_heuristics(env);
+    mt.seed(0);
+
+    parking_clearance_ready = false;
+    map_clearance.clear();
+    sorted_cell_ids_by_clearance.clear();
+    sorted_cell_clearance_level_indices.clear();
+    sorted_cell_clearance_levels.clear();
+
+    // Random/stay/traffic-only parking needs no geometric clearance table.
+    // Combined APIs decide from their weights when a parking call is made.
+    if (env->parking_model == 3 || env->parking_model == 4 || env->parking_model == 5)
+        ensure_parking_clearance(env);
+}
+
+// Original task-flow movement cost. Directional flow values are treated as in
+// the existing code: temp_op and temp_vertex are *integer* intermediates.
+long long parking_movement_cost(int loc, int next_loc,
+    SharedEnvironment* env, const std::vector<Double4>& background_flow,
+    bool use_traffic)
+{
+    if (!use_traffic)
+        return 1;
+    const int d = get_d(loc - next_loc, env);
+    const int op_flow = static_cast<int>(
+        (background_flow[loc].d[d] + 1) *
+        background_flow[next_loc].d[(d + 2) % 4]);
+    int vertex_flow = 1;
+    for (int j = 0; j < 4; ++j)
+        vertex_flow += background_flow[next_loc].d[j];
+    const long long movement = 1LL + op_flow + (vertex_flow - 1) / 2;
+    if (movement < 1)
+        throw std::runtime_error("Non-positive traffic movement cost");
+    return movement;
+}
+
+struct FlowParkingResult {
+    std::vector<int> flexible_agents;
+    std::vector<int> assigned_tasks;   // -1 => parking, otherwise task id
+    std::vector<int> parking_goals;    // -1 => assigned a task, otherwise cell id
+    std::vector<std::list<int>> paths;
+    long long task_movement_scaled = 0;
+    long long task_movement_steps = 0;
+    int candidate_count = 0;
+    double graph_ms = 0.0;
+    double solve_ms = 0.0;
+    double extract_ms = 0.0;
+};
 
 
 void schedule_plan_flow(int time_limit, std::vector<int> & proposed_schedule,  SharedEnvironment* env, std::vector<Double4> background_flow, bool use_traffic, bool new_only)
@@ -703,6 +803,7 @@ void schedule_plan_flow_dummy(int time_limit, SharedEnvironment* env, std::vecto
         env->dummy_parking_allocation.clear();
         return;
     }
+    ensure_parking_clearance(env);
 
     // Identify task locations that are currently protected by assigned agents.
     std::unordered_set<int> protected_task_locs;
@@ -948,7 +1049,7 @@ void schedule_plan_flow_dummy_all(int time_limit, SharedEnvironment* env, std::v
     const int map_size = static_cast<int>(env->map.size());
 
     constexpr double gamma = 2.0;
-    constexpr long long COST_SCALE = 1000LL;
+    constexpr long long COST_SCALE = kParkingCostScale;
     using ParkingFlow = NetworkSimplex<ListDigraph, int, long long>;
 
     // Stage 1: identify idle agents and protect the next location of each
@@ -986,6 +1087,7 @@ void schedule_plan_flow_dummy_all(int time_limit, SharedEnvironment* env, std::v
         env->dummy_parking_allocation.clear();
         return;
     }
+    ensure_parking_clearance(env);
 
     // One average-cost-step estimate for all destinations. The task flow
     // updates this during successful assignment; unit-cost parking uses 1.
@@ -1047,14 +1149,10 @@ void schedule_plan_flow_dummy_all(int time_limit, SharedEnvironment* env, std::v
 
         const double penalty = B * avg_step_cost *
             (base + obstacle_fraction * (base - next));
-        const double scaled = penalty * static_cast<double>(COST_SCALE);
-        if (!std::isfinite(scaled) ||
-            scaled >= static_cast<double>(std::numeric_limits<long long>::max()) / 8.0)
-            throw std::runtime_error("Parking penalty is too large");
-
         const ListDigraph::Arc arc = g.addArc(map_nodes[loc], sink);
         capacity[arc] = 1;
-        cost[arc] = std::llround(scaled);
+        cost[arc] = scale_parking_arc_cost(
+            penalty, static_cast<double>(std::numeric_limits<long long>::max()) / 8.0);
         ++candidate_count;
     }
 
@@ -1260,7 +1358,7 @@ void schedule_plan_flow_dummy_traffic(
     const auto t0 = Clock::now();
     const int map_size = static_cast<int>(env->map.size());
 
-    constexpr long long COST_SCALE = 1000LL;
+    constexpr long long COST_SCALE = kParkingCostScale;
     using ParkingFlow = NetworkSimplex<ListDigraph, int, long long>;
 
     // Stage 1: identify idle agents and protect the next location of each
@@ -1367,14 +1465,10 @@ void schedule_plan_flow_dummy_traffic(
 
         const double T = vertex_traffic[loc];
         const double penalty = B_T * avg_step_cost * T * T;
-        const double scaled = penalty * static_cast<double>(COST_SCALE);
-        if (!std::isfinite(scaled) ||
-            scaled >= static_cast<double>(std::numeric_limits<long long>::max()) / 8.0)
-            throw std::runtime_error("Parking traffic penalty is too large");
-
         const ListDigraph::Arc arc = g.addArc(map_nodes[loc], sink);
         capacity[arc] = 1;
-        cost[arc] = std::llround(scaled);
+        cost[arc] = scale_parking_arc_cost(
+            penalty, static_cast<double>(std::numeric_limits<long long>::max()) / 8.0);
         ++candidate_count;
     }
 
@@ -1566,6 +1660,445 @@ void schedule_plan_flow_dummy_traffic(
               << " avg_target_traffic=" << total_selected_traffic / num_workers
               << std::endl;
 }
+
+FlowParkingResult solve_parking_flow(
+    SharedEnvironment* env,
+    const std::vector<Double4>& background_flow,
+    bool use_traffic,
+    const ParkingWeights& w,
+    const std::vector<int>& flexible_agents,
+    const std::map<int, std::deque<int>>& task_ids_by_loc,
+    const std::unordered_set<int>& protected_locations,
+    bool combined)
+{
+    using Clock = std::chrono::steady_clock;
+    const auto t0 = Clock::now();
+    const int map_size = static_cast<int>(env->map.size());
+    const int N = static_cast<int>(flexible_agents.size());
+    int tasks_count = 0;
+    for (const auto& entry : task_ids_by_loc)
+        tasks_count += static_cast<int>(entry.second.size());
+    const int task_quota = combined ? std::min(N, tasks_count) : 0;
+    const int parking_quota = N - task_quota;
+
+    FlowParkingResult result;
+    result.flexible_agents = flexible_agents;
+    result.assigned_tasks.assign(N, -1);
+    result.parking_goals.assign(N, -1);
+    result.paths.resize(N);
+    if (!N)
+        return result;
+    // Each unit of flow can traverse at most |V|-1 movement arcs on an
+    // optimal positive-cost path, but incurs at most ONE terminal penalty.
+    // Hence sink penalties need not be restricted by an extra factor |V|.
+    const double safe_terminal_scaled_cost =
+        static_cast<double>(std::numeric_limits<long long>::max()) /
+        (32.0 * std::max(1, N));
+    const double safe_movement_scaled_cost =
+        safe_terminal_scaled_cost / std::max(1, map_size);
+
+    double avg_step_cost = use_traffic ? avg_task_step_cost_for_parking : 1.0;
+    if (!std::isfinite(avg_step_cost) || avg_step_cost < 1.0)
+        avg_step_cost = 1.0;
+
+    // No clearance computation at all when b_c==0 (or when nobody parks).
+    const std::vector<std::tuple<int,int>>* clearance = nullptr;
+    if (parking_quota && w.B > 0.0 && w.b_c > 0.0)
+    {
+        ensure_parking_clearance(env);
+        clearance = &map_clearance;
+    }
+
+    // No destination-traffic array when b_t==0. Traffic-dependent *movement*
+    // costs are intentionally separate, controlled by use_traffic.
+    std::vector<double> vertex_traffic;
+    if (parking_quota && w.B > 0.0 && w.b_t > 0.0) {
+        vertex_traffic.assign(map_size, 0.0);
+        for (int loc = 0; loc < map_size; ++loc) {
+            if (env->map[loc] == 1)
+                continue;
+            for (int d = 0; d < 4; ++d)
+                vertex_traffic[loc] += background_flow[loc].d[d];
+        }
+    }
+
+    ListDigraph g;
+    ListDigraph::NodeMap<int> supply(g);
+    ListDigraph::NodeMap<int> node_loc(g, -1);
+    ListDigraph::ArcMap<int> capacity(g);
+    ListDigraph::ArcMap<long long> cost(g);
+    const auto source = g.addNode();
+    const auto task_sink = g.addNode();
+    const auto parking_sink = g.addNode();
+    supply[source] = N;
+    supply[task_sink] = -task_quota;
+    supply[parking_sink] = -parking_quota;
+
+    std::vector<ListDigraph::Node> nodes(map_size);
+    for (int loc = 0; loc < map_size; ++loc) {
+        nodes[loc] = g.addNode();
+        node_loc[nodes[loc]] = loc;
+        supply[nodes[loc]] = 0;
+    }
+    std::vector<ListDigraph::Arc> source_arcs;
+    source_arcs.reserve(N);
+    for (int a : flexible_agents) {
+        int loc = env->curr_states[a].location;
+        if (loc < 0 || loc >= map_size || env->map[loc] == 1)
+            throw std::runtime_error("Invalid flexible agent position");
+        const auto arc = g.addArc(source, nodes[loc]);
+        capacity[arc] = 1;
+        cost[arc] = 0;
+        source_arcs.push_back(arc);
+    }
+
+    // Every task is a distinct unit of required demand. Same-pickup tasks
+    // share a task-to-sink arc of corresponding capacity.
+    if (task_quota) {
+        for (const auto& entry : task_ids_by_loc) {
+            const int loc = entry.first;
+            if (loc < 0 || loc >= map_size || env->map[loc] == 1)
+                throw std::runtime_error("Invalid pickup cell");
+            const auto arc = g.addArc(nodes[loc], task_sink);
+            capacity[arc] = static_cast<int>(entry.second.size());
+            cost[arc] = 0;
+        }
+    }
+
+    // All traversable cells except protected task targets are eligible.
+    // This includes the current cell of each idle agent if it is not protected,
+    // enabling Stay as a genuine choice without using a dummy zero-cost option.
+    if (parking_quota) {
+        for (int loc = 0; loc < map_size; ++loc) {
+            if (env->map[loc] == 1 || protected_locations.count(loc))
+                continue;
+            double score = 0.0;
+            if (clearance) {
+                const int c_int = std::get<0>((*clearance)[loc]);
+                const int o_int = std::get<1>((*clearance)[loc]);
+                if (c_int < 1 || o_int < 0)
+                    throw std::runtime_error("Invalid static clearance");
+                const double c = static_cast<double>(c_int);
+                const double o = static_cast<double>(o_int);
+                const double base = 1.0 / (c*c);
+                const double next = 1.0 / ((c+1.0)*(c+1.0));
+                score += w.b_c * (base + (o / (8.0*c))*(base - next));
+            }
+            if (!vertex_traffic.empty()) {
+                const double T = vertex_traffic[loc];
+                score += w.b_t * (T*T);
+            }
+            const auto arc = g.addArc(nodes[loc], parking_sink);
+            capacity[arc] = 1;
+            cost[arc] = scale_parking_arc_cost(w.B * avg_step_cost * score,
+                                               safe_terminal_scaled_cost);
+            ++result.candidate_count;
+        }
+        if (result.candidate_count < parking_quota)
+            throw std::runtime_error("Not enough eligible parking cells");
+    }
+
+    // Directed movement graph: costs for traversing to a cell are the same
+    // as in schedule_plan_flow(), including the no-horizontal-wrap fix.
+    const int offsets[4] = {-env->cols, 1, env->cols, -1};
+    for (int loc = 0; loc < map_size; ++loc) {
+        if (env->map[loc] == 1)
+            continue;
+        for (int dir = 0; dir < 4; ++dir) {
+            if (dir == 1 && loc % env->cols == env->cols - 1)
+                continue;
+            if (dir == 3 && loc % env->cols == 0)
+                continue;
+            const int next = loc + offsets[dir];
+            if (next < 0 || next >= map_size || env->map[next] == 1)
+                continue;
+            const long long w_edge = parking_movement_cost(
+                loc, next, env, background_flow, use_traffic);
+            const auto arc = g.addArc(nodes[loc], nodes[next]);
+            capacity[arc] = N;
+            const double scaled_edge = static_cast<double>(kParkingCostScale) * w_edge;
+            if (!std::isfinite(scaled_edge) || scaled_edge >= safe_movement_scaled_cost)
+                throw std::runtime_error("Movement arc cost exceeds safe int64 range");
+            cost[arc] = kParkingCostScale * w_edge;
+        }
+    }
+    const auto t_graph_end = Clock::now();
+
+    using ParkingNS = NetworkSimplex<ListDigraph, int, long long>;
+    ParkingNS ns(g);
+    ns.costMap(cost).upperMap(capacity).supplyMap(supply);
+    const auto status = ns.run();
+    const auto t_solve_end = Clock::now();
+    if (status != ParkingNS::OPTIMAL)
+        throw std::runtime_error("Task/parking flow infeasible or unbounded");
+
+    ListDigraph::ArcMap<int> remaining(g);
+    ns.flowMap(remaining);
+    std::map<int, std::deque<int>> remaining_tasks = task_ids_by_loc;
+    std::unordered_set<int> used_parking_cells;
+    int assigned_count = 0;
+    int parked_count = 0;
+    for (int i = 0; i < N; ++i) {
+        if (remaining[source_arcs[i]] != 1)
+            throw std::runtime_error("Source arc did not select agent");
+        --remaining[source_arcs[i]];
+        const int start = env->curr_states[flexible_agents[i]].location;
+        auto cur = nodes[start];
+        int traversed = 0;
+        int moved = 0;
+        long long path_cost = 0;
+        bool done = false;
+        while (!done) {
+            const int loc = node_loc[cur];
+            if (loc < 0 || loc >= map_size)
+                throw std::runtime_error("Unexpected flow node during decomposition");
+            result.paths[i].push_back(loc);
+            bool found = false;
+            for (ListDigraph::OutArcIt arc(g, cur); arc != lemon::INVALID; ++arc) {
+                if (remaining[arc] <= 0)
+                    continue;
+                const auto nxt = g.target(arc);
+                --remaining[arc];
+                if (nxt == task_sink) {
+                    auto it = remaining_tasks.find(loc);
+                    if (it == remaining_tasks.end() || it->second.empty())
+                        throw std::runtime_error("No task at selected task sink location");
+                    result.assigned_tasks[i] = it->second.front();
+                    it->second.pop_front();
+                    result.task_movement_scaled += path_cost;
+                    result.task_movement_steps += moved;
+                    ++assigned_count;
+                    done = true;
+                } else if (nxt == parking_sink) {
+                    if (!used_parking_cells.insert(loc).second)
+                        throw std::runtime_error("Duplicate parking destination");
+                    if (protected_locations.count(loc))
+                        throw std::runtime_error("Parking on protected task cell");
+                    result.parking_goals[i] = loc;
+                    ++parked_count;
+                    done = true;
+                } else {
+                    path_cost += cost[arc];
+                    ++moved;
+                    cur = nxt;
+                }
+                found = true;
+                break;
+            }
+            if (!found)
+                throw std::runtime_error("Incomplete task/parking flow path");
+            if (++traversed > map_size + 1)
+                throw std::runtime_error("Unexpected flow cycle during extraction");
+        }
+    }
+    if (assigned_count != task_quota || parked_count != parking_quota)
+        throw std::runtime_error("Wrong task/parking quotas after extraction");
+    for (ListDigraph::InArcIt arc(g, task_sink); arc != lemon::INVALID; ++arc)
+        if (remaining[arc] != 0)
+            throw std::runtime_error("Unconsumed task-sink flow");
+    for (ListDigraph::InArcIt arc(g, parking_sink); arc != lemon::INVALID; ++arc)
+        if (remaining[arc] != 0)
+            throw std::runtime_error("Unconsumed parking-sink flow");
+    const auto t_extract_end = Clock::now();
+
+    auto elapsed_ms = [](Clock::time_point a, Clock::time_point b) {
+        return std::chrono::duration<double, std::milli>(b-a).count();
+    };
+    result.graph_ms = elapsed_ms(t0,t_graph_end);
+    result.solve_ms = elapsed_ms(t_graph_end,t_solve_end);
+    result.extract_ms = elapsed_ms(t_solve_end,t_extract_end);
+    return result;
+}
+
+void log_parking_flow_result(const char* label, const FlowParkingResult& r,
+    const ParkingWeights& w)
+{
+    const int tasks = static_cast<int>(std::count_if(
+        r.assigned_tasks.begin(), r.assigned_tasks.end(), [](int t){return t!=-1;}));
+    const int idle = static_cast<int>(r.flexible_agents.size()) - tasks;
+    int staying = 0;
+    for (size_t i = 0; i < r.flexible_agents.size(); ++i)
+        if (r.parking_goals[i] >= 0 && r.paths[i].size()==1)
+            ++staying;
+    std::cout << "[" << label << "] agents=" << r.flexible_agents.size()
+              << " tasks=" << tasks << " parking=" << idle
+              << " candidates=" << r.candidate_count
+              << " stay=" << staying
+              << " B=" << w.B << " b_c=" << w.b_c << " b_t=" << w.b_t
+              << " graph_ms=" << r.graph_ms
+              << " solver_ms=" << r.solve_ms
+              << " extraction_ms=" << r.extract_ms << std::endl;
+}
+
+// Call once from schedule_initialize() when starting a new simulation to
+// invalidate clearance data and the previous task-step cost reference.
+void reset_combined_parking_model()
+{
+    avg_task_step_cost_for_parking = 1.0;
+}
+
+// -------------------------------------------------------------------------
+// Function 1. SECOND parking flow: call AFTER schedule_plan_flow() has updated
+// env->curr_task_schedule. Task-assignment decisions remain completely fixed.
+// -------------------------------------------------------------------------
+// b_c == 0 skips all static clearance work for the parking cost.
+// b_t == 0 skips the destination vertex-traffic score (but movement edges
+// still use traffic if use_traffic==true).
+void schedule_plan_flow_dummy_combined(
+    int time_limit, SharedEnvironment* env,
+    const std::vector<Double4>& background_flow,
+    bool use_traffic, bool new_only,
+    double B, double b_c, double b_t)
+{
+    const ParkingWeights weights{B,b_c,b_t};
+    validate_parking_weights(weights);
+    if (static_cast<int>(env->curr_task_schedule.size()) != env->num_of_agents)
+        throw std::runtime_error("curr_task_schedule size mismatch");
+
+    std::vector<int> idle;
+    std::unordered_set<int> protected_locs;
+    for (int a = 0; a < env->num_of_agents; ++a) {
+        const int task_id = env->curr_task_schedule[a];
+        if (task_id == -1) {
+            idle.push_back(a);
+            continue;
+        }
+        const auto it = env->task_pool.find(task_id);
+        if (it == env->task_pool.end())
+            throw std::runtime_error("Working agent's task not found");
+        const auto& t = it->second;
+        if (t.idx_next_loc >= 0 && t.idx_next_loc < static_cast<int>(t.locations.size()))
+            protected_locs.insert(t.locations[t.idx_next_loc]);
+    }
+    if (idle.empty()) {
+        env->dummy_parking_allocation.clear();
+        return;
+    }
+    const auto r = solve_parking_flow(env,background_flow,use_traffic,weights,
+                                      idle,{},protected_locs,false);
+    // Commit only after the entire flow has been successfully extracted.
+    env->dummy_parking_allocation.clear();
+    for (size_t i = 0; i < r.flexible_agents.size(); ++i) {
+        const int a = r.flexible_agents[i];
+        env->dummy_parking_allocation[a] = {r.parking_goals[i]};
+        agent_guide_path[a] = r.paths[i];
+    }
+    log_parking_flow_result("parking-second-flow",r,weights);
+}
+
+// -------------------------------------------------------------------------
+// Function 2. ONE combined task + parking flow: call INSTEAD of both
+// schedule_plan_flow() and schedule_plan_flow_dummy_*().
+// Guarantees the number of assigned tasks min(flexible_agents, flexible_tasks),
+// but the joint objective may trade away some task-assignment distance to
+// improve parking. See integration notes for this important distinction.
+// -------------------------------------------------------------------------
+void schedule_plan_flow_joint_task_parking(
+    int time_limit, std::vector<int>& proposed_schedule,
+    SharedEnvironment* env, const std::vector<Double4>& background_flow,
+    bool use_traffic, bool new_only,
+    double B, double b_c, double b_t)
+{
+    (void)time_limit; // No interruptible LEMON timeout in this implementation.
+    const ParkingWeights weights{B,b_c,b_t};
+    validate_parking_weights(weights);
+    const int n = env->num_of_agents;
+    if (static_cast<int>(env->curr_task_schedule.size()) != n)
+        throw std::runtime_error("curr_task_schedule size mismatch");
+
+    // Preserve assignments for tasks already opened. new_only is reserved
+    // for future use; unopened assignments can currently be reconsidered.
+    std::vector<int> next_schedule = env->curr_task_schedule;
+    std::vector<int> flexible;
+    std::vector<unsigned char> is_flexible(n,0);
+    auto add_flexible = [&](int a) {
+        if (a < 0 || a >= n)
+            throw std::runtime_error("Invalid task-assigned agent id");
+        if (!is_flexible[a]) {
+            flexible.push_back(a);
+            is_flexible[a] = 1;
+        }
+    };
+    for (int a=0; a<n; ++a)
+        if (env->curr_task_schedule[a] == -1)
+            add_flexible(a);
+
+    std::map<int,std::deque<int>> task_ids_by_loc;
+    std::unordered_set<int> protected_locs;
+    std::vector<unsigned char> fixed_agent(n,0);
+    for (const auto& entry : env->task_pool) {
+        const int task_id = entry.first;
+        const auto& task = entry.second;
+        if (task.locations.empty())
+            throw std::runtime_error("Task without pickup/delivery locations");
+        const int assigned_agent = task.agent_assigned;
+        if (task.idx_next_loc > 0) {
+            if (assigned_agent < 0 || assigned_agent >= n)
+                throw std::runtime_error("Committed task missing assigned agent");
+            next_schedule[assigned_agent] = task_id;
+            fixed_agent[assigned_agent] = 1;
+            if (task.idx_next_loc >= 0 &&
+                task.idx_next_loc < static_cast<int>(task.locations.size()))
+                protected_locs.insert(task.locations[task.idx_next_loc]);
+            continue;
+        }
+        const int pickup = task.locations[0];
+        task_ids_by_loc[pickup].push_back(task_id);
+        protected_locs.insert(pickup); // Every considered task must be served if N>=M.
+        if (assigned_agent != -1)
+            add_flexible(assigned_agent);
+    }
+    // A locked agent cannot also enter the flexible flow (even if the
+    // environment gave inconsistent curr_task_schedule information).
+    flexible.erase(std::remove_if(flexible.begin(), flexible.end(),
+        [&](int a){ return fixed_agent[a] != 0; }), flexible.end());
+    // Stable order within each task pickup group.
+    for (auto& entry:task_ids_by_loc)
+        std::sort(entry.second.begin(),entry.second.end());
+    std::sort(flexible.begin(),flexible.end());
+    for (int a : flexible)
+        next_schedule[a] = -1;
+
+    const auto r = solve_parking_flow(env,background_flow,use_traffic,weights,
+                                      flexible,task_ids_by_loc,protected_locs,true);
+    std::vector<std::pair<int,int>> parking_allocs;
+    parking_allocs.reserve(flexible.size());
+    for (size_t i = 0; i < r.flexible_agents.size(); ++i) {
+        const int a = r.flexible_agents[i];
+        if (r.assigned_tasks[i] >= 0)
+            next_schedule[a] = r.assigned_tasks[i];
+        else
+            parking_allocs.emplace_back(a,r.parking_goals[i]);
+    }
+
+    // Atomic schedule and goal commit. Do not modify the simulator on failure.
+    proposed_schedule = next_schedule;
+    env->curr_task_schedule = next_schedule;
+    env->dummy_parking_allocation.clear();
+    agent_guide_path.clear();
+    for (size_t i = 0; i < r.flexible_agents.size(); ++i) {
+        if (r.assigned_tasks[i] >= 0) {
+            // Match the old task-flow guidance convention.
+            if (use_traffic)
+                agent_guide_path[r.flexible_agents[i]] = r.paths[i];
+        } else {
+            const int a = r.flexible_agents[i];
+            env->dummy_parking_allocation[a] = {r.parking_goals[i]};
+            agent_guide_path[a] = r.paths[i];
+        }
+    }
+
+    // For the *next* planning cycle, the combined solver can use the mean
+    // movement cost of the task paths chosen in this planning cycle.
+    if (use_traffic && r.task_movement_steps > 0)
+        avg_task_step_cost_for_parking =
+            static_cast<double>(r.task_movement_scaled) /
+            (static_cast<double>(kParkingCostScale) * r.task_movement_steps);
+    if (!use_traffic)
+        avg_task_step_cost_for_parking = 1.0;
+    log_parking_flow_result("task-and-parking-one-flow",r,weights);
+}
+
 
 bool isTaskNode(ListDigraph::Node node, ListDigraph& g, ListDigraph::Node sink) 
 {

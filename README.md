@@ -61,6 +61,38 @@ more info on help:
 ./build/lifelong --help
 ```
 
+## Parking models
+
+Select a parking strategy with `--parkingModel N`:
+
+| N | Strategy |
+|---|---|
+| 1 | Random parking locations |
+| 2 | Stay at the current location |
+| 3 | Clearance preselection |
+| 4 | Parking flow with clearance-preselected destinations |
+| 5 | Parking flow over all eligible cells with a clearance penalty |
+| 6 | Parking flow with a traffic penalty |
+| 7 | Task assignment first, then parking flow with combined clearance and traffic penalties |
+| 8 | One joint flow assigning tasks and parking goals |
+
+Models 7 and 8 use hard-coded weights `B=16`, `b_c=1`, and `b_t=0.01`
+in `TaskScheduler::plan`. Model 7 retains the separate `schedule_plan_flow`
+task assignment. Model 8 skips it and calls `schedule_plan_flow_joint_task_parking`
+directly. The joint objective can trade task travel distance against parking cost
+while assigning as many tasks as possible and preserving already-opened tasks.
+`--useTraffic` independently controls traffic-aware movement costs.
+
+Parking flows in models 5–8 scale costs by 100 before integer optimization,
+rounding parking penalties to the nearest 0.01 cost unit (at most 0.005
+rounding error per parking assignment). Movement costs use the same scale.
+Near-tied assignments can differ from the previous scale of 1000. Invalid
+or oversized parking costs are rejected rather than clamped.
+
+```shell
+./build/lifelong --inputFile input.json --parkingModel 8 --commitWindow 5
+```
+
 ## Multi-step commits
 
 Use `--commitWindow W` (or `-w W`) to schedule and plan once per W simulated

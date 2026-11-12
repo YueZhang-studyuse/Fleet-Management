@@ -46,5 +46,8 @@ public:
     vector<int> accu_waitings;
 
     //configurations
-    int parking_model = 1; // 1- start loc, 2- current loc, 3- clerance (pre-select) 4- clearance(dynamic)
+    // 1 random, 2 stay, 3 clearance preselection, 4 clearance parking flow,
+    // 5 all-cell clearance, 6 traffic, 7 combined parking after task flow,
+    // 8 joint task/parking flow.
+    int parking_model = 1;
 };

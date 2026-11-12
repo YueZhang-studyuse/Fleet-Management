@@ -8,3 +8,6 @@ test.txt
 python/tmp
 python/__pycache__
 output.json
+CMakeLists.txt
+FindLEMON.cmake
+/references/
