@@ -1460,6 +1460,110 @@ void schedule_plan_flow_dummy_all(int time_limit, SharedEnvironment* env, std::v
               << std::endl;
 }
 
+// Traffic-only full-candidate parking using min-cost flow.
+//
+// Signature adds double B_T as last argument. Add matching declaration to
+// scheduler.h and pass B_T from the experiment configuration.
+
+void schedule_plan_flow_dummy_traffic(
+    int time_limit,
+    SharedEnvironment* env,
+    std::vector<Double4> background_flow,
+    bool use_traffic,
+    bool new_only,
+    double B_T)
+{
+
+    using Clock = std::chrono::steady_clock;
+    const auto t0 = Clock::now();
+    const int map_size = static_cast<int>(env->map.size());
+
+    constexpr long long COST_SCALE = 1000LL;
+    using ParkingFlow = NetworkSimplex<ListDigraph, int, long long>;
+
+    // Stage 1: identify idle agents and protect the next location of each
+    // working agent's currently assigned task. Those protected locations
+    // remain traversable but cannot be parking destinations.
+    std::vector<int> idle_agents;
+    idle_agents.reserve(env->num_of_agents);
+    std::unordered_set<int> protected_task_locs;
+
+    for (int agent_id = 0; agent_id < env->num_of_agents; ++agent_id)
+    {
+        const int task_id = env->curr_task_schedule[agent_id];
+        if (task_id == -1)
+        {
+            idle_agents.push_back(agent_id);
+            continue;
+        }
+
+        const auto it = env->task_pool.find(task_id);
+        if (it == env->task_pool.end())
+            throw std::runtime_error("Current task assignment not found in task_pool");
+
+        const auto& task = it->second;
+        const int next_idx = task.idx_next_loc;
+        if (next_idx >= 0 &&
+            next_idx < static_cast<int>(task.locations.size()))
+        {
+            protected_task_locs.insert(task.locations[next_idx]);
+        }
+    }
+
+    const int num_workers = static_cast<int>(idle_agents.size());
+    if (num_workers == 0)
+    {
+        env->dummy_parking_allocation.clear();
+        return;
+    }
+
+    // One average-cost-step estimate for all destinations. The task flow
+    // updates this during successful assignment; unit-cost parking uses 1.
+    const double avg_step_cost =
+        use_traffic ? avg_task_step_cost_for_parking : 1.0;
+    if (!std::isfinite(avg_step_cost) || avg_step_cost <= 0.0)
+        throw std::runtime_error("Invalid average task-flow step cost");
+
+    // Stage 2: build the complete spatial flow graph.
+    // Traffic-only parking penalty: P_T(loc) = B_T * avg_step_cost * T(loc)^2.
+    // Traffic T(loc) sums all four directional components of background_flow.
+    // We do NOT need the static or iteratively updated clearance map.
+    ListDigraph g;
+    ListDigraph::NodeMap<int> supply(g);
+    ListDigraph::NodeMap<int> node_to_maploc(g, -1);
+    ListDigraph::ArcMap<int> capacity(g);
+    ListDigraph::ArcMap<long long> cost(g);
+
+    const ListDigraph::Node source = g.addNode();
+    const ListDigraph::Node sink = g.addNode();
+    supply[source] = num_workers;
+    supply[sink] = -num_workers;
+
+    std::vector<ListDigraph::Node> map_nodes(map_size);
+    for (int loc = 0; loc < map_size; ++loc)
+    {
+        const ListDigraph::Node node = g.addNode();
+        map_nodes[loc] = node;
+        node_to_maploc[node] = loc;
+        supply[node] = 0;
+    }
+
+    std::vector<ListDigraph::Arc> worker_source_arcs;
+    worker_source_arcs.reserve(num_workers);
+
+    for (int agent_id : idle_agents)
+    {
+        const int start_loc = env->curr_states[agent_id].location;
+        if (start_loc < 0 || start_loc >= map_size || env->map[start_loc] == 1)
+            throw std::runtime_error("Invalid idle agent position");
+
+        const ListDigraph::Arc arc = g.addArc(source, map_nodes[start_loc]);
+        capacity[arc] = 1;
+        cost[arc] = 0;
+        worker_source_arcs.push_back(arc);
+    }
+
+
 
 
 bool isTaskNode(ListDigraph::Node node, ListDigraph& g, ListDigraph::Node sink) 
