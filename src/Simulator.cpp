@@ -14,6 +14,7 @@ vector<State> Simulator::move(vector<Action>& actions)
         {
             planner_movement[k] = actions[k];
         }
+        planner_movements[k].push_back(planner_movement[k]);
     }
 
     if (!model->is_valid(curr_states, actions, timestep))
@@ -37,6 +38,12 @@ vector<State> Simulator::move(vector<Action>& actions)
 
 void Simulator::sync_shared_env(SharedEnvironment* env) 
 {
+    env->curr_states = curr_states;
+    env->curr_timestep = timestep;
+    if (last_synced_timestep == timestep)
+        return;
+    last_synced_timestep = timestep;
+
     //decay the past waiting
     double decay_rate = 0.9;
     for (auto & past_waiting : env->past_waitings)
@@ -79,8 +86,6 @@ void Simulator::sync_shared_env(SharedEnvironment* env)
             env->accu_waitings[i]=0;
         }
     }
-    env->curr_states = curr_states;
-    env->curr_timestep = timestep;
 }
 
 json Simulator::actual_path_to_json() const

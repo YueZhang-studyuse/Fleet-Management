@@ -19,12 +19,15 @@ public:
 
     list<int> check_finished_tasks(vector<State>& states, int timestep);
 
-    int curr_timestep;
+    int curr_timestep = 0;
 
 
     // reveal new task
     void reveal_tasks(int timestep);
     void update_tasks(vector<State>& states, vector<int>& assignment, int timestep);
+    void update_tasks(vector<State>& states, int timestep);
+    const vector<int>& get_current_assignment() const { return current_assignment; }
+    void clear_new_agents_tasks() { new_freeagents.clear(); new_tasks.clear(); }
 
     void sync_shared_env(SharedEnvironment* env);
 

@@ -30,6 +30,7 @@ void init_dist_table(TrajLNS& lns, int amount);
 
 //update traj and distance table for agent i
 void update_traj(TrajLNS& lns, int i);
+void update_traj(TrajLNS& lns, int i, int start);
 
 
 }

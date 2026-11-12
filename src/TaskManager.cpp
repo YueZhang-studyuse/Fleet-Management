@@ -128,7 +128,7 @@ bool TaskManager::set_task_assignment(vector< int>& assignment)
 list<int> TaskManager::check_finished_tasks(vector<State>& states, int timestep)
 { 
     list<int> finished_tasks_this_timestep; // <agent_id, task_id, timestep>
-    new_freeagents.clear(); //prepare to push all new free agents to the shared environment
+    // Accumulate notifications until the next planning call consumes them.
     for (int k = 0; k < num_of_agents; k++)
     {
         if (current_assignment[k] != -1 && states[k].location == ongoing_tasks[current_assignment[k]]->get_next_loc())
@@ -186,7 +186,7 @@ void TaskManager::sync_shared_env(SharedEnvironment* env)
  */
 void TaskManager::reveal_tasks(int timestep)
 {
-    new_tasks.clear(); //prepare to push all new revealed tasks to the shared environment
+    // Accumulate notifications across the committed steps and timeout waits.
     while (ongoing_tasks.size() < num_tasks_reveal)
     {
         int i = task_id%tasks.size();
@@ -214,6 +214,12 @@ void TaskManager::update_tasks(vector<State>& states, vector<int>& assignment, i
 {
     curr_timestep = timestep;
     set_task_assignment(assignment);
+    update_tasks(states, timestep);
+}
+
+void TaskManager::update_tasks(vector<State>& states, int timestep)
+{
+    curr_timestep = timestep;
     check_finished_tasks(states,timestep);
     reveal_tasks(timestep);
 }

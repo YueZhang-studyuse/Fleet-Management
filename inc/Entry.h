@@ -13,7 +13,6 @@ public:
     MAPFPlanner* planner;
     TaskScheduler* scheduler;
     int commit_window = 1;
-    int time_in_commit_window = 0;
 
 	Entry(SharedEnvironment* env): env(env)
     {
@@ -31,8 +30,8 @@ public:
 
     virtual void initialize(int preprocess_time_limit);
 
-    // return next actions and the proposed task schedule for all agents
-    virtual void compute(int time_limit, std::vector<Action> & plan, std::vector<int> & proposed_schedule);
+    // Return a time-major action batch and one task schedule for the window.
+    virtual void compute(int time_limit, std::vector<std::vector<Action>> & plan, std::vector<int> & proposed_schedule);
 
     void update_goal_locations(std::vector<int> & proposed_schedule);
 };

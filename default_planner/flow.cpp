@@ -165,7 +165,12 @@ void init_dist_table(TrajLNS& lns, int amount){
 
 //update traj and distance table for agent i
 void update_traj(TrajLNS& lns, int i){
-    int start = lns.env->curr_states[i].location;
+    update_traj(lns, i, lns.env->curr_states[i].location);
+}
+
+// A committed PIBT rollout refreshes guides from predicted positions without
+// changing the shared environment's observed states.
+void update_traj(TrajLNS& lns, int i, int start){
     int goal = lns.tasks[i];
     lns.goal_nodes[i] = astar(lns.env,lns.flow, lns.heuristics[goal],lns.trajs[i],lns.mem,start,goal, &(lns.neighbors));
     add_traj(lns,i);

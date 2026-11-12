@@ -1,4 +1,8 @@
 #include <cmath>
+#include <climits>
+#include <future>
+#include <stdexcept>
+#include <thread>
 #include "CompetitionSystem.h"
 #include <boost/tokenizer.hpp>
 #include "SharedEnv.h"
@@ -8,9 +12,11 @@
 
 using json = nlohmann::ordered_json;
 
-
-
-
+namespace
+{
+    // Fixed grace period per planning call; does not scale with commitWindow.
+    constexpr auto PLANNING_TIMEOUT_TOLERANCE = std::chrono::milliseconds(5);
+}
 
 
 // // This function might not work correctly with small map (w or h <=2)
@@ -20,77 +26,45 @@ using json = nlohmann::ordered_json;
 // }
 
 
-void BaseSystem::sync_shared_env() 
+void BaseSystem::sync_shared_env()
 {
-    if (!started)
-    {
-        env->goal_locations.resize(num_of_agents);
-        task_manager.sync_shared_env(env);
-        simulator.sync_shared_env(env);
+    env->goal_locations.resize(num_of_agents);
+    task_manager.sync_shared_env(env);
+    simulator.sync_shared_env(env);
 
-        if (simulator.get_curr_timestep() == 0)
-        {
-            env->new_freeagents.reserve(num_of_agents); //new free agents are empty in task_manager on initialization, set it after task_manager sync
-            for (int i = 0; i < num_of_agents; i++)
-            {
-                env->new_freeagents.push_back(i);
-            }
-        }
-        //update proposed action to all wait
-        proposed_actions.clear();
-        proposed_actions.resize(num_of_agents, Action::WA);
-        //update proposed schedule to previous assignment
-        proposed_schedule = env->curr_task_schedule;
-        
-    }
-    else
+    if (simulator.get_curr_timestep() == 0)
     {
-        env->curr_timestep = simulator.get_curr_timestep();
+        env->new_freeagents.clear();
+        for (int i = 0; i < num_of_agents; i++)
+            env->new_freeagents.push_back(i);
     }
+    proposed_actions.clear();
+    proposed_schedule = env->curr_task_schedule;
 }
 
-
-bool BaseSystem::planner_wrapper()
+void BaseSystem::plan(int& timeout_timesteps)
 {
-    planner->compute(plan_time_limit, proposed_actions, proposed_schedule);
-    return true;
-}
-
-
-void BaseSystem::plan(int & timeout_timesteps)
-{
-
-    using namespace std::placeholders;
-    int timestep = simulator.get_curr_timestep();
-
-    std::packaged_task<bool()> task(std::bind(&BaseSystem::planner_wrapper, this));
-
-
-    future = task.get_future();
-    if (task_td.joinable()){
-        task_td.join();
-    }
+    const int budget = plan_time_limit * planner->commit_window;
     env->plan_start_time = std::chrono::steady_clock::now();
-    task_td = std::thread(std::move(task));
+    planner->compute(budget, proposed_actions, proposed_schedule);
+    const auto elapsed = std::chrono::steady_clock::now() - env->plan_start_time;
+    planner_times.push_back(std::chrono::duration<double>(elapsed).count());
 
-    started = true;
-
-    while (timestep + timeout_timesteps < simulation_time){
-
-        if (future.wait_for(std::chrono::milliseconds(plan_time_limit)) == std::future_status::ready)
-            {
-                task_td.join();
-                started = false;
-                auto res = future.get();
-
-                logger->log_info("planner returns", timestep + timeout_timesteps);
-                return;
-            }
-        logger->log_info("planner timeout", timestep + timeout_timesteps);
-        timeout_timesteps += 1;
+    // Allow a small timing overrun before charging extra simulated wait steps.
+    // Each started interval beyond the budget plus tolerance costs one wait.
+    // Count after compute returns; no planner worker thread is needed.
+    timeout_timesteps = 0;
+    const auto excess = elapsed - std::chrono::milliseconds(budget) - PLANNING_TIMEOUT_TOLERANCE;
+    if (excess > std::chrono::steady_clock::duration::zero())
+    {
+        const auto tick = std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+            std::chrono::milliseconds(plan_time_limit));
+        const auto waits = excess / tick + (excess % tick != decltype(excess)::zero());
+        timeout_timesteps = static_cast<int>(std::min<decltype(waits)>(
+            waits, simulation_time - simulator.get_curr_timestep()));
     }
-
-    //
+    if (logger != nullptr)
+        logger->log_info("planner returns", simulator.get_curr_timestep());
 }
 
 
@@ -105,6 +79,7 @@ bool BaseSystem::planner_initialize()
     if (init_future.wait_for(std::chrono::milliseconds(preprocess_time_limit)) == std::future_status::ready)
     {
         init_td.join();
+        init_future.get();
         return true;
     }
 
@@ -131,63 +106,64 @@ void BaseSystem::log_preprocessing(bool succ)
 
 void BaseSystem::simulate(int simulation_time)
 {
-    //init logger
-    //Logger* log = new Logger();
-    initialize();
+    if (planner->commit_window <= 0 || plan_time_limit <= 0 ||
+        planner->commit_window > INT_MAX / plan_time_limit)
+        throw std::invalid_argument("Invalid commit window or planning time budget");
 
     this->simulation_time = simulation_time;
+    initialize();
 
-    vector<Action> all_wait_actions(num_of_agents, Action::NA);
-
-    for (; simulator.get_curr_timestep() < simulation_time; )
+    // Every simulated step, including a timeout wait, advances task progress
+    // and waiting statistics. Only the planner calls are batched.
+    auto advance = [this](vector<Action>& actions)
     {
-        cout<<"current timestep "<<simulator.get_curr_timestep()<<endl;
-        // find a plan
-        sync_shared_env();
-
-        auto start = std::chrono::steady_clock::now();
-
-        int timeout_timesteps = 0;
-
-        plan(timeout_timesteps);
-
-        auto end = std::chrono::steady_clock::now();
-
-        for (int i = 0 ; i< timeout_timesteps; i ++){
-            simulator.move(all_wait_actions);
-            for (int a = 0; a < num_of_agents; a++)
-                {
-                    if (!env->goal_locations[a].empty())
-                        solution_costs[a]++;
-                }
-        }
-
-        total_timetous+=timeout_timesteps;
-
-        if (simulator.get_curr_timestep() >= simulation_time){
-
-            auto diff = end-start;
-            planner_times.push_back(std::chrono::duration<double>(diff).count());
-            break;
-        }
-
+        const auto& assignment = task_manager.get_current_assignment();
         for (int a = 0; a < num_of_agents; a++)
         {
-            if (!env->goal_locations[a].empty())
+            if (assignment[a] != -1)
                 solution_costs[a]++;
         }
+        auto states = simulator.move(actions);
+        task_manager.update_tasks(states, simulator.get_curr_timestep());
+        simulator.sync_shared_env(env);
+    };
 
-        // move drives
-        vector<State> curr_states = simulator.move(proposed_actions);
-        int timestep = simulator.get_curr_timestep();
-        // agents do not move
+    while (simulator.get_curr_timestep() < simulation_time)
+    {
+        cout << "current timestep " << simulator.get_curr_timestep() << endl;
+        sync_shared_env();
+        task_manager.clear_new_agents_tasks();
 
+        int timeout_timesteps = 0;
+        plan(timeout_timesteps);
+        task_manager.set_task_assignment(proposed_schedule);
 
-        auto diff = end-start;
-        planner_times.push_back(std::chrono::duration<double>(diff).count());
+        const int steps = std::min(planner->commit_window,
+                                   simulation_time - simulator.get_curr_timestep());
+        bool valid_prefix = true;
+        for (int step = 0; step < steps; step++)
+        {
+            vector<Action> actions(num_of_agents, Action::WA);
+            if (valid_prefix && step < proposed_actions.size())
+                actions = proposed_actions[step];
+            const int errors_before = simulator.get_number_errors();
+            advance(actions);
+            // An invalid joint move changes the predicted state. Discard the
+            // dependent suffix and wait until the next planning boundary.
+            valid_prefix = valid_prefix && simulator.get_number_errors() == errors_before;
+        }
 
-        // update tasks
-        task_manager.update_tasks(curr_states, proposed_schedule, simulator.get_curr_timestep());
+        // Execute committed actions first, then append waits for budget overruns.
+        // NA keeps timeout waits distinguishable from planned waits in the output.
+        for (int i = 0; i < timeout_timesteps &&
+                        simulator.get_curr_timestep() < simulation_time; i++)
+        {
+            vector<Action> actions(num_of_agents, Action::NA);
+            if (logger != nullptr)
+                logger->log_info("planner timeout", simulator.get_curr_timestep());
+            advance(actions);
+            total_timetous++;
+        }
     }
 }
 
@@ -198,6 +174,9 @@ void BaseSystem::initialize()
     env->rows = map.rows;
     env->cols = map.cols;
     env->map = map.map;
+    env->commit_window = planner->commit_window;
+    env->past_waitings.assign(map.map.size() * 5, {0, 0});
+    env->accu_waitings.assign(num_of_agents, 0);
 
     
     // // bool succ = load_records(); // continue simulating from the records
@@ -224,7 +203,7 @@ void BaseSystem::initialize()
         solution_costs[a] = 0;
     }
 
-    proposed_actions.resize(num_of_agents, Action::WA);
+    proposed_actions.clear();
     proposed_schedule.resize(num_of_agents, -1);
 }
 

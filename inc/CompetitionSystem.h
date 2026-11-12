@@ -7,8 +7,6 @@
 #include "Entry.h"
 #include "Logger.h"
 #include "TaskManager.h"
-#include <pthread.h>
-#include <future>
 #include "Simulator.h"
 
 class BaseSystem
@@ -50,11 +48,6 @@ public:
 
 	virtual ~BaseSystem()
     {
-        //safely exit: wait for join the thread then delete planner and exit
-        if (started)
-        {
-            task_td.join();
-        }
         if (planner != nullptr)
         {
             delete planner;
@@ -72,7 +65,6 @@ public:
 
     void simulate(int simulation_time);
     void plan(int & timeout_timesteps);
-    bool planner_wrapper();
 
     //void saveSimulationIssues(const string &fileName) const;
     void saveResults(const string &fileName, int screen) const;
@@ -82,22 +74,18 @@ protected:
     Grid map;
     int simulation_time;
 
-    vector<Action> proposed_actions;
+    vector<vector<Action>> proposed_actions;
     vector<int> proposed_schedule;
 
     int total_timetous = 0;
 
-
-    std::future<bool> future;
-    std::thread task_td;
-    bool started = false;
 
     Entry* planner;
     SharedEnvironment* env;
 
     int preprocess_time_limit=10;
 
-    int plan_time_limit = 3;
+    int plan_time_limit = 3; // milliseconds per simulated step
 
 
     vector<State> starts;

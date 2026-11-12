@@ -29,7 +29,6 @@ OUTPUT_SCREEN = 1
 
 # Sweep options from src/driver.cpp
 SCHEDULE_MODELS = [1]          # -m / --scheduleModel
-COMMIT_WINDOWS = [1]                 # -w / --commitWindow
 USE_TRAFFIC_VALUES = [True]   # -u / --useTraffic
 
 # Set True if you want to keep running after a failed command.
@@ -40,14 +39,38 @@ def tf(value: bool) -> str:
     return "true" if value else "false"
 
 
+def parse_domain(value: str) -> tuple[str, int]:
+    domain, separator, window_text = value.partition(":")
+    if domain not in DOMAIN_PREFIXES:
+        raise argparse.ArgumentTypeError(
+            f"Unknown domain '{domain}'; choose from {', '.join(DOMAIN_PREFIXES)}."
+        )
+    try:
+        window = int(window_text) if separator else 1
+    except ValueError:
+        raise argparse.ArgumentTypeError(
+            f"Invalid commit window in '{value}'; use DOMAIN:POSITIVE_INTEGER."
+        ) from None
+    if window <= 0 or window > 2_147_483_647 // PLAN_TIME_LIMIT:
+        raise argparse.ArgumentTypeError(
+            "Commit window must be positive and window * PLAN_TIME_LIMIT must fit in a C++ int."
+        )
+    return domain, window
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Run sweeps for selected domains.")
     parser.add_argument(
         "--domains",
         nargs="+",
-        choices=DOMAIN_PREFIXES,
-        default=["warehouseSmall"],
-        help="Domains to run (default: warehouseSmall).",
+        type=parse_domain,
+        metavar="DOMAIN[:WINDOW]",
+        default=[("warehouseSmall", 1)],
+        help=(
+            "Domains with individual commit windows, e.g. warehouseSmall:5 random:2. "
+            "Bare names use window 1 (default: warehouseSmall:1). "
+            f"Domains: {', '.join(DOMAIN_PREFIXES)}."
+        ),
     )
     parser.add_argument(
         "--skipLess",
@@ -55,7 +78,12 @@ def main() -> int:
         help="Skip cases where team size <= task reveal.",
     )
     args = parser.parse_args()
-    domains = list(dict.fromkeys(args.domains))
+    domain_windows = {}
+    for domain, window in args.domains:
+        if domain in domain_windows and domain_windows[domain] != window:
+            parser.error(f"Domain '{domain}' has conflicting commit windows; specify one per domain.")
+        domain_windows[domain] = window
+    domains = list(domain_windows)
 
     if not EXE_PATH.exists():
         print(f"Executable not found: {EXE_PATH}", file=sys.stderr)
@@ -82,7 +110,6 @@ def main() -> int:
     combos = list(
         itertools.product(
             SCHEDULE_MODELS,
-            COMMIT_WINDOWS,
             USE_TRAFFIC_VALUES
         )
     )
@@ -104,7 +131,9 @@ def main() -> int:
     run_idx = 0
 
     print(f"Experiment: {EXPERIMENT_NAME}")
-    print(f"Domains: {', '.join(domains)}")
+    print("Domains: " + ", ".join(
+        f"{domain} (commitWindow={window})" for domain, window in domain_windows.items()
+    ))
     for domain in domains:
         print(f"Run folder: {OUTPUT_ROOT / f'{domain}_sweep' / EXPERIMENT_NAME}")
     print(f"Instance jobs: {len(jobs)}")
@@ -113,13 +142,14 @@ def main() -> int:
 
     # Sequential execution in the main thread: one command at a time.
     for domain, instance in jobs:
+        window = domain_windows[domain]
         run_root = OUTPUT_ROOT / f"{domain}_sweep" / EXPERIMENT_NAME
         json_dir = run_root / "json"
         log_dir = run_root / "logs"
         cout_dir = run_root / "cout"
         for directory in (json_dir, log_dir, cout_dir):
             directory.mkdir(parents=True, exist_ok=True)
-        for model, window, use_traffic in combos:
+        for model, use_traffic in combos:
             run_idx += 1
             run_tag = (
                 f"{instance.stem}_m{model}_w{window}_u{int(use_traffic)}"

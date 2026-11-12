@@ -12,7 +12,9 @@ namespace DefaultPlanner{
 int get_gp_h(TrajLNS& lns, int ai, int target){
     int min_heuristic;
 
-    if (!lns.traj_dists.empty() && !lns.traj_dists[ai].empty())
+    // Clearing a stale guide disables its distance table. Keep the table's
+    // allocation so a refreshed guide can reuse it with a new search label.
+    if (!lns.trajs[ai].empty() && !lns.traj_dists.empty() && !lns.traj_dists[ai].empty())
 	{
         min_heuristic = get_dist_2_path(lns.traj_dists[ai], lns.env, target, &(lns.neighbors));	
 		// if (lns.env->goal_locations[ai].empty())

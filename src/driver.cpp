@@ -48,15 +48,15 @@ int main(int argc, char **argv)
         ("outputScreen,c", po::value<int>()->default_value(1), "the level of details in the output file, 1--showing all the output, 2--ignore the events and tasks, 3--ignore the events, tasks, errors, planner times, starts and paths")
         ("simulationTime,s", po::value<int>()->default_value(5000), "run simulation")
         ("fileStoragePath,f", po::value<std::string>()->default_value(""), "the large file storage path")
-        ("planTimeLimit,t", po::value<int>()->default_value(1000), "the time limit for planner in milliseconds")
+        ("planTimeLimit,t", po::value<int>()->default_value(1000), "planner budget per simulated step in milliseconds; multiplied by commitWindow per call")
         ("preprocessTimeLimit,p", po::value<int>()->default_value(300000), "the time limit for preprocessing in milliseconds")
         ("logFile,l", po::value<std::string>()->default_value(""), "redirect stdout messages into the specified log file")
         ("logDetailLevel,d", po::value<int>()->default_value(1), "the minimum severity level of log messages to display, 1--showing all the messages, 2--showing warnings and fatal errors, 3--showing fatal errors only")
         ("useTraffic,u", po::value<bool>()->default_value(false), "use of traffic in scheduling")
         ("assignNew,n", po::value<bool>()->default_value(false), "wether new agents only or allow task swapping")
         ("scheduleModel,m", po::value<int>()->default_value(1), "scheduler model, 1- flow, 2- flow with history edge cost, 3- greedy")
-        ("parkingModel", po::value<int>()->default_value(1), "parking model, 1- random loc, 2- current loc, 3- clerance (pre-select) 4- clearance(dynamic) 5- clearance(dynamic, all)")
-        ("commitWindow,w", po::value<int>()->default_value(1), "commit window");
+        ("parkingModel", po::value<int>()->default_value(1), "parking model, 1- random loc, 2- current loc, 3- clerance (pre-select) 4- clearance(dynamic) 5- clearance(dynamic, all) 6- clearance(dynamic, all, traffic) 7- clearance(dynamic, all, traffic, new only")
+        ("commitWindow,w", po::value<int>()->default_value(1), "number of action steps committed per planner call (positive)");
     clock_t start_time = clock();
     po::store(po::parse_command_line(argc, argv, desc), vm);
 
@@ -67,6 +67,15 @@ int main(int argc, char **argv)
     }
 
     po::notify(vm);
+
+    const int commit_window = vm["commitWindow"].as<int>();
+    const int step_time_limit = vm["planTimeLimit"].as<int>();
+    if (commit_window <= 0 || step_time_limit <= 0 ||
+        commit_window > INT_MAX / step_time_limit)
+    {
+        std::cerr << "commitWindow and planTimeLimit must be positive, and their product must fit in an int.\n";
+        return 1;
+    }
 
     boost::filesystem::path p(vm["inputFile"].as<std::string>());
     boost::filesystem::path dir = p.parent_path();
@@ -159,7 +168,7 @@ int main(int argc, char **argv)
     system_ptr = std::make_unique<BaseSystem>(grid, planner, agents, tasks, model);
 
     system_ptr->set_logger(logger);
-    system_ptr->set_plan_time_limit(vm["planTimeLimit"].as<int>()*vm["commitWindow"].as<int>());//times commit window
+    system_ptr->set_plan_time_limit(step_time_limit);
     system_ptr->set_preprocess_time_limit(vm["preprocessTimeLimit"].as<int>());
 
     system_ptr->set_num_tasks_reveal(read_param_json<float>(data, "numTasksReveal", 1));

@@ -15,27 +15,17 @@ void Entry::initialize(int preprocess_time_limit)
     planner->initialize(preprocess_time_limit);
 }
 
-//The compute function will be called by competition system on each timestep.
+//The compute function is called once per commit window.
 //It computes:
 //  1. a schedule that specifies which agent complete which task.
-//  2. a next action that specifies how each agent should move in the next timestep.
-//NB: the parameter time_limit is specified in milliseconds.
-void Entry::compute(int time_limit, std::vector<Action> & plan, std::vector<int> & proposed_schedule)
+//  2. a batch of joint actions, indexed by step and then by agent.
+//NB: time_limit is the total window budget in milliseconds.
+void Entry::compute(int time_limit, std::vector<std::vector<Action>> & plan, std::vector<int> & proposed_schedule)
 {
-
-    // if (time_in_commit_window == 0)
-    // {
-         //first call task schedule
-
-        scheduler->set_flow(planner->get_flow());
-        scheduler->plan(time_limit,proposed_schedule);
-
-        //then update the first unfinished errand/location of tasks for planner reference
-        update_goal_locations(proposed_schedule);
-        
-        //call the planner to compute the actions
-        planner->plan(time_limit,plan);
-
+    scheduler->set_flow(planner->get_flow());
+    scheduler->plan(time_limit, proposed_schedule);
+    update_goal_locations(proposed_schedule);
+    planner->plan(time_limit, plan);
 }
 
 // Set the next goal locations for each agent based on the proposed schedule

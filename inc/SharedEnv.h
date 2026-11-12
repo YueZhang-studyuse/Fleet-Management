@@ -25,11 +25,12 @@ public:
     vector< vector<pair<int, int> > > goal_locations;
 
     int curr_timestep = 0;
+    int commit_window = 1; // number of joint action steps requested per planning call
     vector<State> curr_states;
 
     TaskPool task_pool; // task_id -> Task
-    vector<int> new_tasks; // task ids of tasks that are newly revealed in the current timestep
-    vector<int> new_freeagents; // agent ids of agents that are newly free in the current timestep
+    vector<int> new_tasks; // task ids revealed since the previous planning call
+    vector<int> new_freeagents; // agents freed since the previous planning call
     vector<int> curr_task_schedule; // the current scheduler, agent_id -> task_id
     std::unordered_map<int, std::vector<int>> dummy_parking_allocation; // agent_id -> [parking_loc]
 

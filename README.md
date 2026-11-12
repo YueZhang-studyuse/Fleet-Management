@@ -61,6 +61,79 @@ more info on help:
 ./build/lifelong --help
 ```
 
+## Multi-step commits
+
+Use `--commitWindow W` (or `-w W`) to schedule and plan once per W simulated
+steps. `--planTimeLimit T` remains the budget **per step**, in milliseconds;
+each planning call receives a total budget of `W * T`. Both options must be
+positive, and their product must fit in a C++ `int`.
+
+```shell
+./build/lifelong --inputFile input.json --commitWindow 5 --planTimeLimit 100
+```
+
+`Entry::compute` returns `std::vector<std::vector<Action>>`, indexed as
+`plan[step][agent]`, and one task assignment for the window. To implement a
+native multi-step planner, override:
+
+```cpp
+void plan(int time_limit, std::vector<std::vector<Action>>& commits) override;
+```
+
+The requested length is `env->commit_window`. `MAPFPlanner.cpp` forwards the
+remaining time budget to `DefaultPlanner::plan` in `default_planner/planner.cpp`.
+That function optimizes guide paths once, then runs W joint PIBT steps using
+predicted positions and per-agent errand indices. It resets move reservations
+each step and refreshes guides when goals change, using goal distances if the
+refresh budget is exhausted. The shared simulation states and tasks are never
+advanced during planning. The scheduler runs once per window.
+
+The single-step `plan(int, std::vector<Action>&)` interface remains available
+for explicit single-step calls. Custom committed planners should implement the
+batch overload above; overriding only the single-step overload does not replace
+the committed planner.
+
+The simulator executes up to W returned steps in order, fills a short or empty
+batch with ordinary waits, and ignores steps beyond W. Every step validates
+joint moves and advances tasks. An invalid move becomes an all-agent wait and
+the rest of that batch is replaced with waits because its predicted starting
+states are no longer valid. Task assignments are accepted once per window;
+new-task and free-agent notifications accumulate until the next planning call.
+
+Planning runs synchronously. After executing the window, the simulator appends
+`ceil(max(0, elapsed_ms - W*T - 5) / T)` all-agent timeout waits. A hard-coded
+5 ms tolerance applies once per planning call, regardless of W; the budget
+passed to the planner remains W*T. For example, W=3 and T=100 allow up to
+305 ms without a timeout; a 350 ms call adds one timeout wait after the commits.
+Timeout waits also advance task errands. Execution always stops at
+`simulationTime`, including within a batch or its timeout waits.
+`numEntryTimeouts` counts timeout waits actually executed; `plannerTimes` has
+one elapsed time in seconds per planning call. Timeout waits appear as `T` in
+the output paths, ordinary waits as `W`.
+
+Because planning is synchronous, timeout accounting happens after a planner
+returns; it cannot interrupt a planner that never returns. Preprocessing keeps
+its existing separate timeout enforcement.
+
+Build and run the C++ regression tests with:
+
+```shell
+cmake -S . -B build -DBUILD_TESTING=ON -DPYTHON=OFF
+cmake --build build -j
+ctest --test-dir build --output-on-failure
+```
+
+For experiment sweeps, give each domain its own commit window in `run_exp.py`:
+
+```shell
+python3 run_exp.py --domains warehouseSmall:5 random:2 --skipLess
+```
+
+Every instance in a domain uses that domain's window. Bare domain names default
+to window 1, and omitting `--domains` runs `warehouseSmall:1`. Conflicting
+windows for the same domain are rejected. Output filenames include `_w5`,
+`_w2`, etc. so different windows remain distinguishable.
+
 ## Windows users
 If you are a Windows user, the most straightforward method to utilize our start-kits is by employing the WSL (Windows Subsystem for Linux) subsystem. Follow these steps:
 1. Install WSL, please refer to [https://learn.microsoft.com/en-us/windows/wsl/install](https://learn.microsoft.com/en-us/windows/wsl/install)

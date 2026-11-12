@@ -38,6 +38,15 @@ void MAPFPlanner::plan(int time_limit,vector<Action> & actions)
     return;
 }
 
+void MAPFPlanner::plan(int time_limit, vector<vector<Action>>& commits)
+{
+    // The default planner owns the entire committed PIBT rollout.
+    int limit = time_limit - std::chrono::duration_cast<milliseconds>(
+        std::chrono::steady_clock::now() - env->plan_start_time).count() -
+        DefaultPlanner::PLANNER_TIMELIMIT_TOLERANCE;
+    DefaultPlanner::plan(limit, commits, env, DefaultPlanner::get_guide_path());
+}
+
 void MAPFPlanner::plan_pibt(int time_limit,vector<Action> & actions) 
 {
     // use the remaining time after task schedule for path planning, -PLANNER_TIMELIMIT_TOLERANCE for timing error tolerance;

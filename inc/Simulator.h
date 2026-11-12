@@ -64,6 +64,7 @@ private:
 
     // #timesteps for simulation
     int timestep = 0;
+    int last_synced_timestep = 0;
 
     vector<State> starts;
     int num_of_agents;
