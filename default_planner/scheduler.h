@@ -15,7 +15,9 @@ using namespace lemon;
 
 namespace DefaultPlanner{
 
-// Precompute iterative clearance only for parking models 3, 4 and 5.
+using ClearanceTable = std::vector<std::tuple<double,int>>;
+
+// Precompute iterative and neighbourhood clearance for parking models 3, 4 and 5.
 // Combined parking APIs prepare it lazily if their active weights need it.
 void schedule_initialize(int preprocess_time_limit, SharedEnvironment* env);
 
@@ -41,9 +43,24 @@ bool isTaskNode(ListDigraph::Node node, ListDigraph& g, ListDigraph::Node sink);
 
 unordered_map<int,list<int>> get_guide_path();
 // Empty until clearance preprocessing has been requested for this simulation.
-const std::vector<std::tuple<int,int>>& get_map_clearance();
+const ClearanceTable& get_map_clearance();
+// Smooth a completed iterative table without modifying it. Chebyshev rings
+// contain only in-map traversable cells; empty rings have no weight.
+// Returns (fractional clearance, 0), or (0, 0) for obstacles. Defaults include
+// radii 1..6; rings with weight below min_weight are omitted.
+// Requires positive free-cell clearances, 0 <= decay < 1, 0 < min_weight <= 1.
+// Uses O(R * map.size()) time and O(map.size()) auxiliary storage. Does not
+// populate caches or change the clearance used by parking assignment.
+ClearanceTable calculate_neighbourhood_clearance(
+    const SharedEnvironment* env,
+    const ClearanceTable& iterative_clearance,
+    double decay = 0.5, double min_weight = 0.01);
+// Replace the shared table with neighbourhood scores and refresh its ranking.
+// Comment out this overload's call after the iterative build for the baseline.
+void calculate_neighbourhood_clearance(
+    const SharedEnvironment* env, double decay = 0.5, double min_weight = 0.01);
 const std::vector<int>& get_sorted_cell_ids_by_clearance();
-void refresh_sorted_cells_by_clearance(const SharedEnvironment* env, int min_clearance_threshold = 1);
+void refresh_sorted_cells_by_clearance(const SharedEnvironment* env, double min_clearance_threshold = 1.0);
 
 }
 

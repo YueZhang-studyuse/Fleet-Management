@@ -14,10 +14,10 @@ namespace DefaultPlanner{
 std::mt19937 mt;
 std::unordered_set<int> free_agents;
 std::unordered_set<int> free_tasks;
-std::vector<std::tuple<int,int>> map_clearance;
+ClearanceTable map_clearance;
 std::vector<int> sorted_cell_ids_by_clearance;
 std::vector<int> sorted_cell_clearance_level_indices;
-std::vector<int> sorted_cell_clearance_levels;
+std::vector<double> sorted_cell_clearance_levels;
 
 unordered_map<int,list<int>> agent_guide_path; //agent id, guide path from flow
 
@@ -89,7 +89,7 @@ struct Node
     };  // used by OPEN (heap) to compare nodes (top of the heap has min f-val, and then highest g-val)
 };
 
-static std::vector<std::tuple<int, int>> calculate_map_clearance(const std::vector<int>& map, int rows, int cols)
+static ClearanceTable calculate_map_clearance(const std::vector<int>& map, int rows, int cols)
 {
     const int map_size = static_cast<int>(map.size());
     std::vector<int> clearance_distance(map_size, std::numeric_limits<int>::max());
@@ -159,7 +159,7 @@ static std::vector<std::tuple<int, int>> calculate_map_clearance(const std::vect
     }
 
     // Store for each cell: (clearance distance, obstacles in clearance bounding box).
-    std::vector<std::tuple<int, int>> clearance(map_size, std::make_tuple(0, 0));
+    ClearanceTable clearance(map_size, std::make_tuple(0, 0));
     for (int loc = 0; loc < map_size; ++loc)
     {
         int cell_clearance = clearance_distance[loc];
@@ -181,7 +181,115 @@ static std::vector<std::tuple<int, int>> calculate_map_clearance(const std::vect
     return clearance;
 }
 
-void refresh_sorted_cells_by_clearance(const SharedEnvironment* env, int min_clearance_threshold)
+ClearanceTable calculate_neighbourhood_clearance(
+    const SharedEnvironment* env,
+    const ClearanceTable& iterative_clearance,
+    double decay, double min_weight)
+{
+    if (!env || env->rows <= 0 || env->cols <= 0 ||
+        static_cast<long long>(env->rows) * env->cols != env->map.size() ||
+        env->map.size() > static_cast<size_t>(std::numeric_limits<int>::max()) ||
+        iterative_clearance.size() != env->map.size())
+        throw std::invalid_argument("Neighbourhood clearance requires matching map and table dimensions");
+    if (!std::isfinite(decay) || decay < 0.0 || decay >= 1.0 ||
+        !std::isfinite(min_weight) || min_weight <= 0.0 || min_weight > 1.0)
+        throw std::invalid_argument("Neighbourhood clearance requires 0 <= decay < 1 and 0 < min_weight <= 1");
+
+    const int rows = env->rows;
+    const int cols = env->cols;
+    const size_t stride = static_cast<size_t>(cols) + 1;
+    const size_t prefix_size = (static_cast<size_t>(rows) + 1) * stride;
+    // Read the completed input table throughout; publish the result only after averaging.
+    std::vector<double> sums(prefix_size, 0.0);
+    std::vector<int> counts(prefix_size, 0);
+    for (int r = 0; r < rows; ++r)
+    {
+        double row_sum = 0.0;
+        int row_count = 0;
+        for (int c = 0; c < cols; ++c)
+        {
+            const int loc = r * cols + c;
+            if (env->map[loc] != 1)
+            {
+                const double clearance = std::get<0>(iterative_clearance[loc]);
+                if (!std::isfinite(clearance) || clearance <= 0)
+                    throw std::invalid_argument("Traversable cells require positive iterative clearance");
+                row_sum += clearance;
+                ++row_count;
+            }
+            const size_t above = static_cast<size_t>(r) * stride + c + 1;
+            sums[above + stride] = sums[above] + row_sum;
+            if (!std::isfinite(sums[above + stride]))
+                throw std::overflow_error("Neighbourhood clearance prefix sum is not finite");
+            counts[above + stride] = counts[above] + row_count;
+        }
+    }
+
+    auto square = [&](const auto& prefix, int r, int c, int radius)
+    {
+        const int top = std::max(0, r - radius);
+        const int left = std::max(0, c - radius);
+        const int bottom = r + std::min(radius, rows - 1 - r) + 1;
+        const int right = c + std::min(radius, cols - 1 - c) + 1;
+        return prefix[static_cast<size_t>(bottom) * stride + right]
+             - prefix[static_cast<size_t>(top) * stride + right]
+             - prefix[static_cast<size_t>(bottom) * stride + left]
+             + prefix[static_cast<size_t>(top) * stride + left];
+    };
+
+    std::vector<double> weights;
+    const int max_radius = std::max(rows, cols) - 1;
+    for (double weight = decay; weights.size() < static_cast<size_t>(max_radius) &&
+                               weight >= min_weight; weight *= decay)
+        weights.push_back(weight);
+
+    ClearanceTable result(env->map.size(), {0.0, 0});
+    for (int r = 0; r < rows; ++r)
+    for (int c = 0; c < cols; ++c)
+    {
+        const int loc = r * cols + c;
+        if (env->map[loc] == 1)
+            continue;
+        double inner_sum = std::get<0>(iterative_clearance[loc]);
+        int inner_count = 1;
+        double weighted_sum = static_cast<double>(inner_sum);
+        double total_weight = 1.0;
+        for (size_t i = 0; i < weights.size(); ++i)
+        {
+            const int radius = static_cast<int>(i) + 1;
+            const double outer_sum = square(sums, r, c, radius);
+            const int outer_count = square(counts, r, c, radius);
+            const int ring_count = outer_count - inner_count;
+            if (ring_count > 0)
+            {
+                weighted_sum += weights[i] *
+                    (static_cast<double>(outer_sum - inner_sum) / ring_count);
+                total_weight += weights[i];
+            }
+            inner_sum = outer_sum;
+            inner_count = outer_count;
+        }
+        result[loc] = {weighted_sum / total_weight, 0};
+    }
+    return result;
+}
+
+static void refresh_clearance_levels()
+{
+    sorted_cell_clearance_level_indices.clear();
+    sorted_cell_clearance_levels.clear();
+    for (int idx = 0; idx < static_cast<int>(sorted_cell_ids_by_clearance.size()); ++idx)
+    {
+        const double value = std::get<0>(map_clearance[sorted_cell_ids_by_clearance[idx]]);
+        if (sorted_cell_clearance_levels.empty() || value != sorted_cell_clearance_levels.back())
+        {
+            sorted_cell_clearance_levels.push_back(value);
+            sorted_cell_clearance_level_indices.push_back(idx);
+        }
+    }
+}
+
+void refresh_sorted_cells_by_clearance(const SharedEnvironment* env, double min_clearance_threshold)
 {
     const int map_size = static_cast<int>(env->map.size());
 
@@ -191,8 +299,8 @@ void refresh_sorted_cells_by_clearance(const SharedEnvironment* env, int min_cle
     std::sort(sorted_cell_ids_by_clearance.begin(), sorted_cell_ids_by_clearance.end(),
               [&](int a, int b)
               {
-                  auto clearance_a = (a >= 0 && a < map_size) ? map_clearance[a] : std::make_tuple(-1, std::numeric_limits<int>::max());
-                  auto clearance_b = (b >= 0 && b < map_size) ? map_clearance[b] : std::make_tuple(-1, std::numeric_limits<int>::max());
+                  auto clearance_a = (a >= 0 && a < map_size) ? map_clearance[a] : std::make_tuple(-1.0, std::numeric_limits<int>::max());
+                  auto clearance_b = (b >= 0 && b < map_size) ? map_clearance[b] : std::make_tuple(-1.0, std::numeric_limits<int>::max());
 
                   if (std::get<0>(clearance_a) != std::get<0>(clearance_b))
                       return std::get<0>(clearance_a) > std::get<0>(clearance_b);
@@ -207,44 +315,7 @@ void refresh_sorted_cells_by_clearance(const SharedEnvironment* env, int min_cle
                        [&](int id) { return std::get<0>(map_clearance[id]) < min_clearance_threshold; }),
         sorted_cell_ids_by_clearance.end());
 
-    sorted_cell_clearance_level_indices.clear();
-    sorted_cell_clearance_levels.clear();
-    int max_clearance = -1;
-    int min_clearance = -1;
-    // Capture the clearance range represented in the sorted order.
-    if (!sorted_cell_ids_by_clearance.empty())
-    {
-        int top_cell = sorted_cell_ids_by_clearance.front();
-        if (top_cell >= 0 && top_cell < map_size)
-            max_clearance = std::get<0>(map_clearance[top_cell]);
-
-        int last_cell = sorted_cell_ids_by_clearance.back();
-        if (last_cell >= 0 && last_cell < map_size)
-            min_clearance = std::get<0>(map_clearance[last_cell]);
-    }
-
-    auto find_first_index_for_clearance = [&](int target_clearance) -> int
-    {
-        // Map a clearance value to its first position in the sorted cell array.
-        for (int idx = 0; idx < static_cast<int>(sorted_cell_ids_by_clearance.size()); ++idx)
-        {
-            int cell_id = sorted_cell_ids_by_clearance[idx];
-            if (cell_id < 0 || cell_id >= map_size)
-                continue;
-            if (std::get<0>(map_clearance[cell_id]) == target_clearance)
-                return idx;
-        }
-        return -1;
-    };
-
-    if (max_clearance >= 0 && min_clearance >= 0)
-    {
-        for (int c = max_clearance; c >= min_clearance; --c)
-        {
-            sorted_cell_clearance_levels.push_back(c);
-            sorted_cell_clearance_level_indices.push_back(find_first_index_for_clearance(c));
-        }
-    }
+    refresh_clearance_levels();
 }
 
 static void build_sort_clearance(const SharedEnvironment* env, int rows, int cols)
@@ -264,14 +335,14 @@ static void build_sort_clearance_with_update(const SharedEnvironment* env, int r
     sorted_cell_ids_by_clearance.clear();
     sorted_cell_ids_by_clearance.reserve(map_size);
 
-    std::vector<std::tuple<int, int>> last_temp_clearance;
+    ClearanceTable last_temp_clearance;
 
     // Iteratively pick the current best cell and then block it in the temporary map.
     // This makes each next selection reflect previously chosen dummy parking cells.
     for (int step = 0; step < map_size; ++step)
     {
         // Recompute clearance after each virtual placement so ranking adapts over time.
-        std::vector<std::tuple<int, int>> temp_clearance = calculate_map_clearance(temp_map, rows, cols);
+        ClearanceTable temp_clearance = calculate_map_clearance(temp_map, rows, cols);
         last_temp_clearance = temp_clearance;
 
         int best_loc = -1;
@@ -321,43 +392,13 @@ static void build_sort_clearance_with_update(const SharedEnvironment* env, int r
         }
     }
 
-    sorted_cell_clearance_level_indices.clear();
-    sorted_cell_clearance_levels.clear();
-    int max_clearance = -1;
-    int min_clearance = -1;
-    // Build clearance-level lookup metadata from the final ranking.
-    if (!sorted_cell_ids_by_clearance.empty())
-    {
-        int top_cell = sorted_cell_ids_by_clearance.front();
-        if (top_cell >= 0 && top_cell < map_size)
-            max_clearance = std::get<0>(map_clearance[top_cell]);
+    refresh_clearance_levels();
+}
 
-        int last_cell = sorted_cell_ids_by_clearance.back();
-        if (last_cell >= 0 && last_cell < map_size)
-            min_clearance = std::get<0>(map_clearance[last_cell]);
-    }
-
-    auto find_first_index_for_clearance = [&](int target_clearance) -> int
-    {
-        for (int idx = 0; idx < static_cast<int>(sorted_cell_ids_by_clearance.size()); ++idx)
-        {
-            int cell_id = sorted_cell_ids_by_clearance[idx];
-            if (cell_id < 0 || cell_id >= map_size)
-                continue;
-            if (std::get<0>(map_clearance[cell_id]) == target_clearance)
-                return idx;
-        }
-        return -1;
-    };
-
-    if (max_clearance >= 0 && min_clearance >= 0)
-    {
-        for (int c = max_clearance; c >= min_clearance; --c)
-        {
-            sorted_cell_clearance_levels.push_back(c);
-            sorted_cell_clearance_level_indices.push_back(find_first_index_for_clearance(c));
-        }
-    }
+void calculate_neighbourhood_clearance(const SharedEnvironment* env, double decay, double min_weight)
+{
+    map_clearance = calculate_neighbourhood_clearance(env, map_clearance, decay, min_weight);
+    refresh_sorted_cells_by_clearance(env);
 }
 
 static void ensure_parking_clearance(const SharedEnvironment* env)
@@ -372,6 +413,8 @@ static void ensure_parking_clearance(const SharedEnvironment* env)
     // Use iterative update mode: each selected top-clearance cell is blocked before
     // computing the next one, producing a spread-out clearance ranking.
     build_sort_clearance_with_update(env, rows, cols);
+    // Comment out this call to use the original iterative clearance and ranking.
+    calculate_neighbourhood_clearance(env);
     parking_clearance_ready = true;
 
     cout << "[DEBUG] Clearance table:" << endl;
@@ -388,7 +431,7 @@ static void ensure_parking_clearance(const SharedEnvironment* env)
     cout << "[DEBUG] Cells sorted by clearance (high->low): ";
     for (int cell_id : sorted_cell_ids_by_clearance)
     {
-        auto clearance = (cell_id >= 0 && cell_id < map_size) ? map_clearance[cell_id] : std::make_tuple(-1, -1);
+        auto clearance = (cell_id >= 0 && cell_id < map_size) ? map_clearance[cell_id] : std::make_tuple(-1.0, -1);
         cout << cell_id << "(" << std::get<0>(clearance) << "," << std::get<1>(clearance) << ") ";
     }
     cout << endl;
@@ -1133,12 +1176,11 @@ void schedule_plan_flow_dummy_all(int time_limit, SharedEnvironment* env, std::v
         if (env->map[loc] == 1 || protected_task_locs.count(loc))
             continue;
 
-        const int c_int = std::get<0>(map_clearance[loc]);
+        const double c = std::get<0>(map_clearance[loc]);
         const int o_int = std::get<1>(map_clearance[loc]);
-        if (c_int < 1 || o_int < 0)
+        if (!std::isfinite(c) || c <= 0.0 || o_int < 0)
             throw std::runtime_error("Invalid static clearance score");
 
-        const double c = static_cast<double>(c_int);
         const double o = static_cast<double>(o_int);
         const double base = std::pow(c, -gamma);
         const double next = std::pow(c + 1.0, -gamma);
@@ -1702,7 +1744,7 @@ FlowParkingResult solve_parking_flow(
         avg_step_cost = 1.0;
 
     // No clearance computation at all when b_c==0 (or when nobody parks).
-    const std::vector<std::tuple<int,int>>* clearance = nullptr;
+    const ClearanceTable* clearance = nullptr;
     if (parking_quota && w.B > 0.0 && w.b_c > 0.0)
     {
         ensure_parking_clearance(env);
@@ -1774,11 +1816,10 @@ FlowParkingResult solve_parking_flow(
                 continue;
             double score = 0.0;
             if (clearance) {
-                const int c_int = std::get<0>((*clearance)[loc]);
+                const double c = std::get<0>((*clearance)[loc]);
                 const int o_int = std::get<1>((*clearance)[loc]);
-                if (c_int < 1 || o_int < 0)
+                if (!std::isfinite(c) || c <= 0.0 || o_int < 0)
                     throw std::runtime_error("Invalid static clearance");
-                const double c = static_cast<double>(c_int);
                 const double o = static_cast<double>(o_int);
                 const double base = 1.0 / (c*c);
                 const double next = 1.0 / ((c+1.0)*(c+1.0));
@@ -2116,7 +2157,7 @@ unordered_map<int,list<int>> get_guide_path()
     return agent_guide_path; 
 }
 
-const std::vector<std::tuple<int,int>>& get_map_clearance()
+const ClearanceTable& get_map_clearance()
 {
     return map_clearance;
 }
