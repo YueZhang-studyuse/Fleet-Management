@@ -17,7 +17,7 @@ namespace DefaultPlanner{
 
 using ClearanceTable = std::vector<std::tuple<double,int>>;
 
-// Precompute iterative and neighbourhood clearance for parking models 3, 4 and 5.
+// Precompute iterative and neighbourhood clearance for parking models 3, 4, 5 and 9.
 // Combined parking APIs prepare it lazily if their active weights need it.
 void schedule_initialize(int preprocess_time_limit, SharedEnvironment* env);
 
@@ -25,6 +25,11 @@ void schedule_initialize(int preprocess_time_limit, SharedEnvironment* env);
 void schedule_plan_flow(int time_limit, std::vector<int> & proposed_schedule,  SharedEnvironment* env, std::vector<Double4> background_flow, bool use_traffic, bool new_only);
 void schedule_plan_flow_dummy(int time_limit, SharedEnvironment* env, std::vector<Double4> background_flow, bool use_traffic, bool new_only);
 void schedule_plan_flow_dummy_all(int time_limit, SharedEnvironment* env, std::vector<Double4> background_flow, bool use_traffic, bool new_only, double B);
+// Sequential parking: clearance penalty multiplied by
+// (1-kappa) + kappa*T/mean_nonzero_traffic; all-zero traffic uses multiplier 1.
+void schedule_plan_flow_dummy_traffic_adjusted(
+    int time_limit, SharedEnvironment* env, const std::vector<Double4>& background_flow,
+    bool use_traffic, bool new_only, double B = 16.0, double kappa = 0.5);
 void schedule_plan_flow_dummy_traffic(int time_limit, SharedEnvironment* env, std::vector<Double4> background_flow, bool use_traffic, bool new_only, double B_T);
 // Reset parking-related preprocessing between simulations.
 void reset_combined_parking_model();

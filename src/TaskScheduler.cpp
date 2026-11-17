@@ -63,6 +63,11 @@ void TaskScheduler::plan(int time_limit, std::vector<int> & proposed_schedule)
         // penalties when choosing parking goals for the remaining idle agents.
         DefaultPlanner::schedule_plan_flow_dummy_combined(limit, env, background_flow, use_traffic, new_only, 16.0, 1.0, 0.01);
     }
+    else if (env->parking_model == 9)
+    {
+        DefaultPlanner::schedule_plan_flow_dummy_traffic_adjusted(
+            limit, env, background_flow, use_traffic, new_only, 16.0, 0.5);
+    }
 }
 
 void TaskScheduler::set_flow(std::vector<DefaultPlanner::Double4> flow)

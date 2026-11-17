@@ -1,4 +1,51 @@
 #!/usr/bin/env python3
+"""Run simulation sweeps sequentially from the repository root.
+
+Examples:
+    python3 run_exp.py
+        Run warehouseSmall with commit window 1 and the settings below.
+
+    python3 run_exp.py --domains empty:3
+        Run instances/empty/ with commitWindow=3: schedule and plan once,
+        then execute three simulation steps before replanning.
+
+    python3 run_exp.py --domains empty:3 random:2 warehouseSmall:5 --skipLess
+        Run three domains with their own commit windows, keeping only
+        instances whose team size is greater than the task-reveal count.
+
+Command-line options:
+    --domains DOMAIN[:WINDOW] [DOMAIN[:WINDOW] ...]
+        Domains: empty, random, warehouseSmall, warehouseLarge, sortationLarge.
+        WINDOW is a positive commit window, not a parking-model number.
+        A bare name such as empty uses window 1. Default: warehouseSmall:1.
+    --skipLess
+        Skip instances with team size <= task-reveal count.
+    -h, --help
+        Show command-line help without running experiments.
+
+Edit these settings inside this script:
+    PARKING_MODELS = []          Use the executable's default parking model.
+    PARKING_MODELS = [9]         Run only traffic-adjusted clearance parking.
+    PARKING_MODELS = [5, 7, 9]   Sweep clearance-only, additive clearance/traffic,
+                                and traffic-adjusted clearance parking.
+    SCHEDULE_MODELS              Scheduler-model values passed to --scheduleModel.
+    USE_TRAFFIC_VALUES          [True], [False], or [False, True]; controls
+                                traffic-aware scheduling movement costs.
+    SIMULATION_TIME             Number of simulation steps per run.
+    PLAN_TIME_LIMIT             Budget per step in ms; each planning call gets
+                                commitWindow * PLAN_TIME_LIMIT milliseconds.
+    PREPROCESS_TIME_LIMIT       Initialization budget in milliseconds.
+    OUTPUT_SCREEN              Result detail level: 1 full, 2 omit events/tasks,
+                                3 also omit errors, times, starts and paths.
+    EXPERIMENT_NAME             Subfolder identifying this experiment batch.
+    CONTINUE_ON_ERROR           Whether to continue after a failed simulation.
+
+Each instance runs every combination of the scheduler, parking, and traffic
+settings. An empty PARKING_MODELS list runs once per other combination and
+omits --parkingModel, allowing the executable's default to apply.
+Results go to outputs/<domain>_sweep/<EXPERIMENT_NAME>/{json,logs,cout}/.
+Filenames include the commit window and, when selected explicitly, parking model.
+"""
 
 import argparse
 import itertools
@@ -16,6 +63,7 @@ DOMAIN_PREFIXES = {
     "warehouseLarge": ("WL", "warehouseLarge"),
     "sortationLarge": ("SL", "sortationLarge"),
     "random": ("R", "random"),
+    "empty": ("empty",),
 }
 
 # Name this run to keep outputs from different sweeps separated.
@@ -29,6 +77,7 @@ OUTPUT_SCREEN = 1
 
 # Sweep options from src/driver.cpp
 SCHEDULE_MODELS = [1]          # -m / --scheduleModel
+PARKING_MODELS = []            # --parkingModel; empty uses the executable's default
 USE_TRAFFIC_VALUES = [True]   # -u / --useTraffic
 
 # Set True if you want to keep running after a failed command.
@@ -84,6 +133,7 @@ def main() -> int:
             parser.error(f"Domain '{domain}' has conflicting commit windows; specify one per domain.")
         domain_windows[domain] = window
     domains = list(domain_windows)
+    parking_models = list(dict.fromkeys(PARKING_MODELS)) or [None]
 
     if not EXE_PATH.exists():
         print(f"Executable not found: {EXE_PATH}", file=sys.stderr)
@@ -110,6 +160,7 @@ def main() -> int:
     combos = list(
         itertools.product(
             SCHEDULE_MODELS,
+            parking_models,
             USE_TRAFFIC_VALUES
         )
     )
@@ -134,6 +185,9 @@ def main() -> int:
     print("Domains: " + ", ".join(
         f"{domain} (commitWindow={window})" for domain, window in domain_windows.items()
     ))
+    print("Parking models: " + ", ".join(
+        str(model) if model is not None else "executable default" for model in parking_models
+    ))
     for domain in domains:
         print(f"Run folder: {OUTPUT_ROOT / f'{domain}_sweep' / EXPERIMENT_NAME}")
     print(f"Instance jobs: {len(jobs)}")
@@ -149,10 +203,11 @@ def main() -> int:
         cout_dir = run_root / "cout"
         for directory in (json_dir, log_dir, cout_dir):
             directory.mkdir(parents=True, exist_ok=True)
-        for model, use_traffic in combos:
+        for model, parking_model, use_traffic in combos:
             run_idx += 1
+            parking_tag = f"_pm{parking_model}" if parking_model is not None else ""
             run_tag = (
-                f"{instance.stem}_m{model}_w{window}_u{int(use_traffic)}"
+                f"{instance.stem}_m{model}{parking_tag}_w{window}_u{int(use_traffic)}"
             )
             out_file = json_dir / f"{run_tag}.json"
             log_file = log_dir / f"{run_tag}.log"
@@ -181,10 +236,13 @@ def main() -> int:
                 "-u",
                 tf(use_traffic),
             ]
+            if parking_model is not None:
+                cmd.extend(["--parkingModel", str(parking_model)])
 
             print(
                 f"[{run_idx}/{total_runs}] {instance.name} "
-                f"m={model} w={window} u={int(use_traffic)}"
+                f"m={model} parking={parking_model if parking_model is not None else 'default'} "
+                f"w={window} u={int(use_traffic)}"
             )
             with cout_file.open("w", encoding="utf-8") as fout:
                 result = subprocess.run(

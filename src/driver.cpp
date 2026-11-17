@@ -55,7 +55,7 @@ int main(int argc, char **argv)
         ("useTraffic,u", po::value<bool>()->default_value(false), "use of traffic in scheduling")
         ("assignNew,n", po::value<bool>()->default_value(false), "reserved for future use; currently has no effect")
         ("scheduleModel,m", po::value<int>()->default_value(1), "scheduler model, 1- flow, 2- flow with history edge cost, 3- greedy")
-        ("parkingModel", po::value<int>()->default_value(1), "parking model: 1- random, 2- stay, 3- clearance preselection, 4- clearance parking flow, 5- all-cell clearance parking flow, 6- traffic parking flow, 7- task flow then combined clearance/traffic parking flow, 8- joint task/parking flow")
+        ("parkingModel", po::value<int>()->default_value(1), "parking model: 1- random, 2- stay, 3- clearance preselection, 4- clearance parking flow, 5- all-cell clearance parking flow, 6- traffic parking flow, 7- task flow then combined clearance/traffic parking flow, 8- joint task/parking flow, 9- traffic-adjusted clearance parking flow")
         ("commitWindow,w", po::value<int>()->default_value(1), "number of action steps committed per planner call (positive)");
     clock_t start_time = clock();
     po::store(po::parse_command_line(argc, argv, desc), vm);
@@ -69,9 +69,9 @@ int main(int argc, char **argv)
     po::notify(vm);
 
     const int parking_model = vm["parkingModel"].as<int>();
-    if (parking_model < 1 || parking_model > 8)
+    if (parking_model < 1 || parking_model > 9)
     {
-        std::cerr << "parkingModel must be between 1 and 8.\n";
+        std::cerr << "parkingModel must be between 1 and 9.\n";
         return 1;
     }
 

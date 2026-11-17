@@ -75,6 +75,7 @@ Select a parking strategy with `--parkingModel N`:
 | 6 | Parking flow with a traffic penalty |
 | 7 | Task assignment first, then parking flow with combined clearance and traffic penalties |
 | 8 | One joint flow assigning tasks and parking goals |
+| 9 | Task assignment first, then traffic-adjusted clearance parking |
 
 Models 7 and 8 use hard-coded weights `B=16`, `b_c=1`, and `b_t=0.01`
 in `TaskScheduler::plan`. Model 7 retains the separate `schedule_plan_flow`
@@ -83,7 +84,29 @@ directly. The joint objective can trade task travel distance against parking cos
 while assigning as many tasks as possible and preserving already-opened tasks.
 `--useTraffic` independently controls traffic-aware movement costs.
 
-Parking flows in models 5–8 scale costs by 100 before integer optimization,
+Model 9 calls `schedule_plan_flow_dummy_traffic_adjusted` after task assignment,
+with hard-coded defaults `B=16` and `kappa=0.5` in `TaskScheduler.cpp`.
+Its parking penalty is `B * avg_step_cost * F_C * ((1-kappa) + kappa*T/mean_T)`.
+`mean_T` is computed once per parking call over all traversable cells with
+positive current vertex traffic, including protected task targets. When the
+entire field is zero, the multiplier is 1. Setting `kappa=0` also recovers
+the clearance-only penalty. Both parameters are available through the C++ API.
+The traffic adjustment uses the current background flow even if `--useTraffic`
+is false; that option controls movement costs independently.
+
+Model 9 reuses model 5's graph construction, extraction, clearance table and
+movement-cost reference. Its logs include `reference_traffic`, `traffic_ms`,
+`total_ms`, `stay_fraction`, `relocation_steps`, and `avg_target_traffic`.
+
+Clearance preprocessing stores one shared table of `(double clearance, int tie-breaker)`.
+After the iterative table is built, `calculate_neighbourhood_clearance(env)`
+replaces it with distance-decayed neighbourhood scores and refreshes its ranking.
+The default decay is 0.5, using Chebyshev rings 1–6 and zero tie-breakers.
+Both clearance-based preselection and parking penalties use the updated table.
+For the original iterative-clearance baseline, comment out that single call
+in `ensure_parking_clearance` in `default_planner/scheduler.cpp` and rebuild.
+
+Parking flows in models 5–9 scale costs by 100 before integer optimization,
 rounding parking penalties to the nearest 0.01 cost unit (at most 0.005
 rounding error per parking assignment). Movement costs use the same scale.
 Near-tied assignments can differ from the previous scale of 1000. Invalid

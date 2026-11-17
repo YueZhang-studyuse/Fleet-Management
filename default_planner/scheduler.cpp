@@ -458,7 +458,8 @@ void schedule_initialize(int preprocess_time_limit, SharedEnvironment* env)
 
     // Random/stay/traffic-only parking needs no geometric clearance table.
     // Combined APIs decide from their weights when a parking call is made.
-    if (env->parking_model == 3 || env->parking_model == 4 || env->parking_model == 5)
+    if (env->parking_model == 3 || env->parking_model == 4 || env->parking_model == 5 ||
+        env->parking_model == 9)
         ensure_parking_clearance(env);
 }
 
@@ -1082,10 +1083,56 @@ void schedule_plan_flow_dummy(int time_limit, SharedEnvironment* env, std::vecto
     std::cout << "Dummy parking flow solving time: "<< elapsed_time << " seconds" << std::endl;
 }
 
-void schedule_plan_flow_dummy_all(int time_limit, SharedEnvironment* env, std::vector<Double4> background_flow, bool use_traffic, bool new_only, double B)
+// One pass over the current snapshot, including protected task destinations in
+// the reference but excluding obstacles and zero-traffic cells.
+double calculate_mean_nonzero_traffic(const SharedEnvironment* env,
+    const std::vector<Double4>& background_flow, std::vector<double>& vertex_traffic)
+{
+    if (background_flow.size() != env->map.size())
+        throw std::invalid_argument("Background flow size does not match map size");
+    vertex_traffic.assign(env->map.size(), 0.0);
+    long double sum = 0.0;
+    size_t count = 0;
+    for (size_t loc = 0; loc < env->map.size(); ++loc)
+    {
+        if (env->map[loc] == 1)
+            continue;
+        for (int d = 0; d < 4; ++d)
+        {
+            const double value = background_flow[loc].d[d];
+            if (!std::isfinite(value) || value < 0.0)
+                throw std::invalid_argument("Background traffic must be finite and non-negative");
+            vertex_traffic[loc] += value;
+        }
+        if (!std::isfinite(vertex_traffic[loc]))
+            throw std::overflow_error("Vertex traffic is not finite");
+        if (vertex_traffic[loc] > 0.0)
+        {
+            sum += vertex_traffic[loc];
+            ++count;
+        }
+    }
+    if (!std::isfinite(sum))
+        throw std::overflow_error("Total background traffic is not finite");
+    return count ? static_cast<double>(sum / count) : 0.0;
+}
+
+double traffic_clearance_multiplier(double traffic, double reference, double kappa)
+{
+    // Return exactly 1 for both controls, including when kappa is 1 and the
+    // field is empty. Input validation happens once before graph construction.
+    if (kappa == 0.0 || reference == 0.0)
+        return 1.0;
+    return (1.0 - kappa) + kappa * (traffic / reference);
+}
+
+static void schedule_plan_flow_clearance(
+    int time_limit, SharedEnvironment* env, const std::vector<Double4>& background_flow,
+    bool use_traffic, bool new_only, double B, bool traffic_adjusted, double kappa)
 {
 
-    cout<<"run schedule_plan_flow_dummy_all"<<endl;
+    cout << (traffic_adjusted ? "run schedule_plan_flow_dummy_traffic_adjusted" :
+                               "run schedule_plan_flow_dummy_all") << endl;
 
     using Clock = std::chrono::steady_clock;
     const auto t0 = Clock::now();
@@ -1131,6 +1178,16 @@ void schedule_plan_flow_dummy_all(int time_limit, SharedEnvironment* env, std::v
         return;
     }
     ensure_parking_clearance(env);
+
+    std::vector<double> vertex_traffic;
+    double reference_traffic = 0.0;
+    double traffic_ms = 0.0;
+    if (traffic_adjusted)
+    {
+        const auto traffic_start = Clock::now();
+        reference_traffic = calculate_mean_nonzero_traffic(env, background_flow, vertex_traffic);
+        traffic_ms = std::chrono::duration<double, std::milli>(Clock::now() - traffic_start).count();
+    }
 
     // One average-cost-step estimate for all destinations. The task flow
     // updates this during successful assignment; unit-cost parking uses 1.
@@ -1189,8 +1246,10 @@ void schedule_plan_flow_dummy_all(int time_limit, SharedEnvironment* env, std::v
         if (obstacle_fraction < 0.0 || obstacle_fraction > 1.0 + 1e-9)
             throw std::runtime_error("Invalid clearance obstacle fraction");
 
-        const double penalty = B * avg_step_cost *
+        double penalty = B * avg_step_cost *
             (base + obstacle_fraction * (base - next));
+        if (traffic_adjusted)
+            penalty *= traffic_clearance_multiplier(vertex_traffic[loc], reference_traffic, kappa);
         const ListDigraph::Arc arc = g.addArc(map_nodes[loc], sink);
         capacity[arc] = 1;
         cost[arc] = scale_parking_arc_cost(
@@ -1264,7 +1323,8 @@ void schedule_plan_flow_dummy_all(int time_limit, SharedEnvironment* env, std::v
 
     if (status != ParkingFlow::OPTIMAL)
     {
-        std::cout << "[parking-all] solver status=" << static_cast<int>(status)
+        std::cout << (traffic_adjusted ? "[parking-traffic-adjusted]" : "[parking-all]")
+                  << " solver status=" << static_cast<int>(status)
                   << " idle=" << num_workers
                   << " candidates=" << candidate_count
                   << " graph_ms=" << ms(t0, t_graph_end)
@@ -1288,6 +1348,7 @@ void schedule_plan_flow_dummy_all(int time_limit, SharedEnvironment* env, std::v
     long long total_relocation_steps = 0;
     int moved_agents = 0;
     double total_selected_clearance = 0.0;
+    double total_selected_traffic = 0.0;
 
     for (int i = 0; i < num_workers; ++i)
     {
@@ -1343,6 +1404,8 @@ void schedule_plan_flow_dummy_all(int time_limit, SharedEnvironment* env, std::v
         moved_agents += (target_loc != start_loc);
         total_selected_clearance +=
             static_cast<double>(std::get<0>(map_clearance[target_loc]));
+        if (traffic_adjusted)
+            total_selected_traffic += vertex_traffic[target_loc];
 
         allocations.emplace_back(agent_id, target_loc);
         guide_paths.emplace_back(agent_id, std::move(path));
@@ -1365,7 +1428,15 @@ void schedule_plan_flow_dummy_all(int time_limit, SharedEnvironment* env, std::v
 
     const auto t_end = Clock::now();
 
-    std::cout << "[parking-all]"
+    if (traffic_adjusted)
+        std::cout << "[parking-traffic-adjustment]"
+                  << " B=" << B << " kappa=" << kappa
+                  << " reference_traffic=" << reference_traffic
+                  << " traffic_ms=" << traffic_ms
+                  << " avg_target_traffic=" << total_selected_traffic / num_workers
+                  << " stay_fraction=" << static_cast<double>(num_workers - moved_agents) / num_workers
+                  << std::endl;
+    std::cout << (traffic_adjusted ? "[parking-traffic-adjusted]" : "[parking-all]")
               << " idle=" << num_workers
               << " candidates=" << candidate_count
               << " map_nodes=" << map_size
@@ -1380,6 +1451,21 @@ void schedule_plan_flow_dummy_all(int time_limit, SharedEnvironment* env, std::v
               << " relocation_steps=" << total_relocation_steps
               << " avg_clearance=" << total_selected_clearance / num_workers
               << std::endl;
+}
+
+void schedule_plan_flow_dummy_all(int time_limit, SharedEnvironment* env,
+    std::vector<Double4> background_flow, bool use_traffic, bool new_only, double B)
+{
+    schedule_plan_flow_clearance(time_limit, env, background_flow, use_traffic, new_only, B, false, 0.0);
+}
+
+void schedule_plan_flow_dummy_traffic_adjusted(int time_limit, SharedEnvironment* env,
+    const std::vector<Double4>& background_flow, bool use_traffic, bool new_only,
+    double B, double kappa)
+{
+    if (!std::isfinite(B) || B < 0.0 || !std::isfinite(kappa) || kappa < 0.0 || kappa > 1.0)
+        throw std::invalid_argument("Traffic-adjusted parking requires finite B >= 0 and 0 <= kappa <= 1");
+    schedule_plan_flow_clearance(time_limit, env, background_flow, use_traffic, new_only, B, true, kappa);
 }
 
 // Traffic-only full-candidate parking using min-cost flow.

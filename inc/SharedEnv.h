@@ -48,6 +48,6 @@ public:
     //configurations
     // 1 random, 2 stay, 3 clearance preselection, 4 clearance parking flow,
     // 5 all-cell clearance, 6 traffic, 7 combined parking after task flow,
-    // 8 joint task/parking flow.
+    // 8 joint task/parking flow, 9 traffic-adjusted clearance parking flow.
     int parking_model = 1;
 };
