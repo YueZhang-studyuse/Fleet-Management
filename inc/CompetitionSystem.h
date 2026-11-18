@@ -99,6 +99,9 @@ protected:
 
     //for evaluation
     vector<int> solution_costs;
+    // parking_history[t]: unassigned agents before action t -> t+1, after
+    // accepting any schedule at t. Includes committed steps and timeout waits.
+    vector<vector<int>> parking_history;
     list<double> planner_times; 
     bool fast_mover_feasible = true;
 

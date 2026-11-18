@@ -40,7 +40,7 @@ void TaskScheduler::plan(int time_limit, std::vector<int> & proposed_schedule)
         // One flow chooses both task assignments and idle parking goals.
         DefaultPlanner::schedule_plan_flow_joint_task_parking(
             limit, proposed_schedule, env, background_flow, use_traffic, new_only,
-            16.0, 1.0, 0.01);
+            16.0, 1.0, 0.1);
         return;
     }
 
@@ -55,18 +55,13 @@ void TaskScheduler::plan(int time_limit, std::vector<int> & proposed_schedule)
     }
     else if (env->parking_model == 6) 
     {
-        DefaultPlanner::schedule_plan_flow_dummy_traffic(limit, env, background_flow, use_traffic, new_only, 0.1);
+        DefaultPlanner::schedule_plan_flow_dummy_traffic(limit, env, background_flow, use_traffic, new_only, 16.0, 0.1);
     }
     else if (env->parking_model == 7)
     {
         // Tasks are fixed by the first flow; combine clearance and traffic
         // penalties when choosing parking goals for the remaining idle agents.
-        DefaultPlanner::schedule_plan_flow_dummy_combined(limit, env, background_flow, use_traffic, new_only, 16.0, 1.0, 0.01);
-    }
-    else if (env->parking_model == 9)
-    {
-        DefaultPlanner::schedule_plan_flow_dummy_traffic_adjusted(
-            limit, env, background_flow, use_traffic, new_only, 16.0, 0.5);
+        DefaultPlanner::schedule_plan_flow_dummy_combined(limit, env, background_flow, use_traffic, new_only, 16.0, 1.0, 0.1);
     }
 }
 

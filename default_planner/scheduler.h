@@ -17,7 +17,7 @@ namespace DefaultPlanner{
 
 using ClearanceTable = std::vector<std::tuple<double,int>>;
 
-// Precompute iterative and neighbourhood clearance for parking models 3, 4, 5 and 9.
+// Precompute iterative and neighbourhood clearance for parking models 3, 4 and 5.
 // Combined parking APIs prepare it lazily if their active weights need it.
 void schedule_initialize(int preprocess_time_limit, SharedEnvironment* env);
 
@@ -25,22 +25,22 @@ void schedule_initialize(int preprocess_time_limit, SharedEnvironment* env);
 void schedule_plan_flow(int time_limit, std::vector<int> & proposed_schedule,  SharedEnvironment* env, std::vector<Double4> background_flow, bool use_traffic, bool new_only);
 void schedule_plan_flow_dummy(int time_limit, SharedEnvironment* env, std::vector<Double4> background_flow, bool use_traffic, bool new_only);
 void schedule_plan_flow_dummy_all(int time_limit, SharedEnvironment* env, std::vector<Double4> background_flow, bool use_traffic, bool new_only, double B);
-// Sequential parking: clearance penalty multiplied by
-// (1-kappa) + kappa*T/mean_nonzero_traffic; all-zero traffic uses multiplier 1.
-void schedule_plan_flow_dummy_traffic_adjusted(
-    int time_limit, SharedEnvironment* env, const std::vector<Double4>& background_flow,
-    bool use_traffic, bool new_only, double B = 16.0, double kappa = 0.5);
-void schedule_plan_flow_dummy_traffic(int time_limit, SharedEnvironment* env, std::vector<Double4> background_flow, bool use_traffic, bool new_only, double B_T);
+// Traffic-only uses B * avg_step_cost * b_t * T / mean_nonzero_T.
+void schedule_plan_flow_dummy_traffic(int time_limit, SharedEnvironment* env,
+    std::vector<Double4> background_flow, bool use_traffic, bool new_only,
+    double B = 16.0, double b_t = 0.1);
 // Reset parking-related preprocessing between simulations.
 void reset_combined_parking_model();
 
+// Parking scores: B * avg_step_cost * (b_c * F_C + b_t * T / mean_nonzero_T).
+// An all-zero traffic field contributes zero. Disabled terms skip preprocessing.
 // Two-flow approach:
 // Run task assignment first, then assign parking goals to idle agents.
-void schedule_plan_flow_dummy_combined( int time_limit, SharedEnvironment* env, const std::vector<Double4>& background_flow, bool use_traffic, bool new_only, double B = 16.0, double b_c = 1.0, double b_t = 0.01);
+void schedule_plan_flow_dummy_combined( int time_limit, SharedEnvironment* env, const std::vector<Double4>& background_flow, bool use_traffic, bool new_only, double B = 16.0, double b_c = 1.0, double b_t = 0.1);
 
 // One-flow approach:
 // Jointly assign tasks and parking goals.
-void schedule_plan_flow_joint_task_parking(int time_limit, std::vector<int>& proposed_schedule, SharedEnvironment* env, const std::vector<Double4>& background_flow, bool use_traffic, bool new_only, double B = 16.0, double b_c = 1.0, double b_t = 0.01);
+void schedule_plan_flow_joint_task_parking(int time_limit, std::vector<int>& proposed_schedule, SharedEnvironment* env, const std::vector<Double4>& background_flow, bool use_traffic, bool new_only, double B = 16.0, double b_c = 1.0, double b_t = 0.1);
 
 unordered_map<int,unordered_map<int,int>> compute_heuristics(SharedEnvironment* env, std::vector<Int4> background_flow, vector<pair<int,int>> current_id_assignment, unordered_map<int,list<int>> task_loc_ids, int max_num_tasks);
 void printDIMACS(ListDigraph& g, ListDigraph::Node source, ListDigraph::Node sink, vector<ListDigraph::Node>& workers, vector<ListDigraph::Node>& tasks, ListDigraph::ArcMap<int>& capacity, ListDigraph::ArcMap<double>& cost);

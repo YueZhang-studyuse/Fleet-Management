@@ -25,9 +25,9 @@ Command-line options:
 
 Edit these settings inside this script:
     PARKING_MODELS = []          Use the executable's default parking model.
-    PARKING_MODELS = [9]         Run only traffic-adjusted clearance parking.
-    PARKING_MODELS = [5, 7, 9]   Sweep clearance-only, additive clearance/traffic,
-                                and traffic-adjusted clearance parking.
+    PARKING_MODELS = [7]         Run sequential additive clearance/traffic parking.
+    PARKING_MODELS = [5, 6, 7, 8] Sweep clearance-only, normalized traffic-only,
+                                  sequential additive, and joint additive parking.
     SCHEDULE_MODELS              Scheduler-model values passed to --scheduleModel.
     USE_TRAFFIC_VALUES          [True], [False], or [False, True]; controls
                                 traffic-aware scheduling movement costs.

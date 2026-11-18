@@ -118,10 +118,13 @@ void BaseSystem::simulate(int simulation_time)
     auto advance = [this](vector<Action>& actions)
     {
         const auto& assignment = task_manager.get_current_assignment();
+        parking_history.emplace_back();
         for (int a = 0; a < num_of_agents; a++)
         {
             if (assignment[a] != -1)
                 solution_costs[a]++;
+            else
+                parking_history.back().push_back(a);
         }
         auto states = simulator.move(actions);
         task_manager.update_tasks(states, simulator.get_curr_timestep());
@@ -170,6 +173,7 @@ void BaseSystem::simulate(int simulation_time)
 
 void BaseSystem::initialize()
 {
+    parking_history.clear();
     env->num_of_agents = num_of_agents;
     env->rows = map.rows;
     env->cols = map.cols;
@@ -239,6 +243,7 @@ void BaseSystem::saveResults(const string &fileName, int screen) const
     js["numScheduleErrors"] = task_manager.get_number_errors();
 
     js["numEntryTimeouts"] = total_timetous;
+    js["parking"] = parking_history;
 
     json planning_times = json::array();
     for (double time: planner_times)
