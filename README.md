@@ -72,31 +72,29 @@ Select a parking strategy with `--parkingModel N`:
 | 3 | Clearance preselection |
 | 4 | Parking flow with clearance-preselected destinations |
 | 5 | Parking flow over all eligible cells with a clearance penalty |
-| 6 | Parking flow with a traffic penalty |
+| 6 | Parking flow with a normalized linear traffic penalty |
 | 7 | Task assignment first, then parking flow with combined clearance and traffic penalties |
 | 8 | One joint flow assigning tasks and parking goals |
-| 9 | Task assignment first, then traffic-adjusted clearance parking |
 
-Models 7 and 8 use hard-coded weights `B=16`, `b_c=1`, and `b_t=0.01`
+Models 7 and 8 use hard-coded weights `B=16`, `b_c=1`, and `b_t=0.1`
 in `TaskScheduler::plan`. Model 7 retains the separate `schedule_plan_flow`
 task assignment. Model 8 skips it and calls `schedule_plan_flow_joint_task_parking`
 directly. The joint objective can trade task travel distance against parking cost
 while assigning as many tasks as possible and preserving already-opened tasks.
 `--useTraffic` independently controls traffic-aware movement costs.
 
-Model 9 calls `schedule_plan_flow_dummy_traffic_adjusted` after task assignment,
-with hard-coded defaults `B=16` and `kappa=0.5` in `TaskScheduler.cpp`.
-Its parking penalty is `B * avg_step_cost * F_C * ((1-kappa) + kappa*T/mean_T)`.
-`mean_T` is computed once per parking call over all traversable cells with
-positive current vertex traffic, including protected task targets. When the
-entire field is zero, the multiplier is 1. Setting `kappa=0` also recovers
-the clearance-only penalty. Both parameters are available through the C++ API.
-The traffic adjustment uses the current background flow even if `--useTraffic`
-is false; that option controls movement costs independently.
+Models 6–8 use the normalized additive destination penalty
+`B * avg_step_cost * (b_c * F_C + b_t * T / mean_T)`.
+`T` is the sum of the four directional background-flow values; `mean_T` is
+computed once per parking call over all traversable cells with positive traffic,
+including protected task targets. An all-zero field contributes zero traffic cost.
+The traffic term is skipped when `b_t=0`; clearance work is skipped when `b_c=0`.
+Traffic-weighted movement costs and task-assignment semantics are unchanged.
 
-Model 9 reuses model 5's graph construction, extraction, clearance table and
-movement-cost reference. Its logs include `reference_traffic`, `traffic_ms`,
-`total_ms`, `stay_fraction`, `relocation_steps`, and `avg_target_traffic`.
+Model 6 uses `b_c=0`, `B=16`, and `b_t=0.1`. Its C++ function now takes
+`B` and `b_t` as its last two arguments. Models 7 and 8 use `B=16`, `b_c=1`,
+and `b_t=0.1`; the corresponding parameters remain available in their C++ APIs.
+The former model 9 has been removed; select models 6–8 for traffic-based parking.
 
 Clearance preprocessing stores one shared table of `(double clearance, int tie-breaker)`.
 After the iterative table is built, `calculate_neighbourhood_clearance(env)`
@@ -106,7 +104,7 @@ Both clearance-based preselection and parking penalties use the updated table.
 For the original iterative-clearance baseline, comment out that single call
 in `ensure_parking_clearance` in `default_planner/scheduler.cpp` and rebuild.
 
-Parking flows in models 5–9 scale costs by 100 before integer optimization,
+Parking flows in models 5–8 scale costs by 100 before integer optimization,
 rounding parking penalties to the nearest 0.01 cost unit (at most 0.005
 rounding error per parking assignment). Movement costs use the same scale.
 Near-tied assignments can differ from the previous scale of 1000. Invalid
@@ -117,6 +115,21 @@ or oversized parking costs are rejected rather than clamped.
 ```
 
 ## Multi-step commits
+
+The result JSON includes `parking`, an array indexed by simulation timestep:
+
+```json
+{"parking": [[1, 3], [0, 1, 3], []]}
+```
+
+`parking[t]` lists the zero-based agent IDs with no assigned task at the start
+of step `t -> t+1`, after any new schedule has been validated and accepted.
+For example, the first entry above means agents 1 and 3 are unassigned at
+timestep 0. An empty entry means every agent has a task. These agents may be
+moving toward parking goals; the list does not imply they are stationary.
+The history includes every executed step, including timeout waits, and is
+included at all output detail levels. Its length is the number of simulated
+steps; a zero-step simulation produces `[]`.
 
 Use `--commitWindow W` (or `-w W`) to schedule and plan once per W simulated
 steps. `--planTimeLimit T` remains the budget **per step**, in milliseconds;
@@ -188,6 +201,21 @@ Every instance in a domain uses that domain's window. Bare domain names default
 to window 1, and omitting `--domains` runs `warehouseSmall:1`. Conflicting
 windows for the same domain are rejected. Output filenames include `_w5`,
 `_w2`, etc. so different windows remain distinguishable.
+
+The `empty` domain is also supported. Select parking models inside `run_exp.py`,
+alongside the other sweep settings:
+
+```python
+PARKING_MODELS = [5, 6, 7, 8]
+```
+
+```shell
+python3 run_exp.py --domains empty:3 warehouseSmall:5
+```
+
+Use model numbers 1–8. The default `PARKING_MODELS = []` leaves
+`--parkingModel` out of the simulator command, so its
+default applies. Explicit models add `_pm5`, `_pm7`, etc. to output filenames.
 
 ## Windows users
 If you are a Windows user, the most straightforward method to utilize our start-kits is by employing the WSL (Windows Subsystem for Linux) subsystem. Follow these steps:
