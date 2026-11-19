@@ -1,0 +1,44 @@
+map: sortation_small.map
+width: 57
+height: 33
+free_cells: 1564
+emitter_cells: 72
+service_cells: 540
+map_template: Problem Generator/script/sortation_config.yaml
+task_file: sortation_small_e_s.tasks
+task_count: 20000
+task_order: e-s
+sampling: independent uniform E and S cells
+numpy_seed: 20261119
+python_random_seed: 20261119
+team_sizes:
+- 100
+- 200
+- 300
+- 400
+- 500
+- 600
+- 700
+- 800
+num_tasks_reveal:
+- 100
+- 200
+- 300
+- 400
+- 500
+- 600
+- 700
+filename_pattern: sortation_small_<numTasksReveal>_<teamSize>.json
+agent_density:
+  100: 0.063939
+  200: 0.127877
+  300: 0.191816
+  400: 0.255754
+  500: 0.319693
+  600: 0.383632
+  700: 0.44757
+  800: 0.511509
+additional_agent_seeds:
+  600: 2026112500
+  700: 2026112600
+  800: 2026112700

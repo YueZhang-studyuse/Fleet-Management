@@ -101,12 +101,25 @@ Models 3–5, 7 and 8 build it during initialization, before timestep 0, so its
 construction counts toward preprocessing rather than the online planning budget.
 Models 7 and 8 skip the sorted-cell ranking but retain the same iterative
 clearance values and neighbourhood calculation. Models 1, 2 and 6 skip the table.
-After the iterative table is built, `calculate_neighbourhood_clearance(env)`
-replaces it with distance-decayed neighbourhood scores and refreshes its ranking.
+After the iterative table is built, `calculate_neighbourhood_clearance`
+replaces it with distance-decayed neighbourhood scores; models 3–5 then sort it.
 The default decay is 0.5, using Chebyshev rings 1–6 and zero tie-breakers.
 Both clearance-based preselection and parking penalties use the updated table.
-For the original iterative-clearance baseline, comment out that single call
-in `ensure_parking_clearance` in `default_planner/scheduler.cpp` and rebuild.
+The final table is cached beside the source map, for example
+`instances/empty/maps/empty-32-32.map.clearance.json`. Later runs load it during
+initialization and sort only when the model needs a ranking. Models share the
+cache regardless of agent count, tasks or commit window. Map contents, dimensions,
+algorithm version and neighbourhood settings are checked before loading; missing,
+invalid or stale caches are recomputed and replaced. Cache writes are atomic;
+write failures leave the computed table available for the current run.
+Generated caches are ignored by Git. Maps without `SharedEnvironment::map_path`
+use in-memory preprocessing only.
+
+For the original iterative-clearance baseline, set `kUseNeighbourhoodClearance`
+to `false` in `default_planner/scheduler.cpp` and rebuild. This setting, along with
+`kNeighbourhoodDecay` and `kNeighbourhoodMinWeight`, automatically invalidates
+incompatible caches. Bump `kClearanceCacheVersion` after changing the underlying
+algorithm, or delete the cache file to force recomputation.
 
 Parking flows in models 5–8 scale costs by 100 before integer optimization,
 rounding parking penalties to the nearest 0.01 cost unit (at most 0.005

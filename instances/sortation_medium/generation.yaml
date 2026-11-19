@@ -1,0 +1,37 @@
+map: sortation_medium.map
+width: 200
+height: 140
+free_cells: 21920
+emitter_cells: 320
+service_cells: 12190
+map_template: Problem Generator/script/sortation_medium.yaml
+task_file: sortation_medium_e_s.tasks
+task_count: 30000
+task_order: e-s
+sampling: independent uniform E and S cells
+numpy_seed: 20261120
+python_random_seed: 20261120
+team_sizes: &id001
+- 3000
+- 6000
+- 9000
+- 12000
+- 15000
+- 18000
+num_tasks_reveal: *id001
+filename_pattern: sortation_medium_<numTasksReveal>_<teamSize>.json
+agent_density:
+  3000: 0.136861
+  6000: 0.273723
+  9000: 0.410584
+  12000: 0.547445
+  15000: 0.684307
+  18000: 0.821168
+additional_agent_seeds:
+  6000: 2026118000
+  9000: 2026121000
+  12000: 2026124000
+  15000: 2026127000
+  18000: 2026130000
+reveal_policy: 'Full Cartesian product: every reveal count paired with every team
+  size'
