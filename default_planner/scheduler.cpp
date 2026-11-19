@@ -577,8 +577,21 @@ static void ensure_parking_clearance(const SharedEnvironment* env)
     return;
 }
 
+double calculate_parking_strength(int rows, int cols, double beta)
+{
+    if (rows <= 0 || cols <= 0 || !std::isfinite(beta) || beta < 0.0)
+        throw std::invalid_argument("Parking strength requires positive dimensions and finite non-negative beta");
+    const double B = beta * ((static_cast<double>(rows) + cols) / 3.0);
+    if (!std::isfinite(B))
+        throw std::overflow_error("Map-adaptive parking strength is not finite");
+    return B;
+}
+
 void schedule_initialize(int preprocess_time_limit, SharedEnvironment* env)
 {
+    env->parking_strength = calculate_parking_strength(env->rows, env->cols, env->parking_beta);
+    cout << "[parking-strength] beta=" << env->parking_beta
+         << " B=" << env->parking_strength << endl;
     DefaultPlanner::init_heuristics(env);
     mt.seed(0);
 
@@ -1535,6 +1548,7 @@ void schedule_plan_flow_dummy_all(int time_limit, SharedEnvironment* env,
 
     std::cout << "[parking-all]"
               << " idle=" << num_workers
+              << " beta=" << env->parking_beta << " B=" << B
               << " candidates=" << candidate_count
               << " map_nodes=" << map_size
               << " avg_step_cost=" << avg_step_cost
@@ -1852,7 +1866,7 @@ void schedule_plan_flow_dummy_traffic(
               << " movement_arcs=" << movement_arc_count
               << " total_arcs=" << (num_workers + candidate_count + movement_arc_count)
               << " avg_step_cost=" << avg_step_cost
-              << " B=" << B << " b_t=" << b_t
+              << " beta=" << env->parking_beta << " B=" << B << " b_t=" << b_t
               << " reference_traffic=" << reference_traffic
               << " graph_ms=" << ms(t0, t_graph_end)
               << " setup_ms=" << ms(t_graph_end, t_solver_start)
@@ -2107,7 +2121,7 @@ FlowParkingResult solve_parking_flow(
 }
 
 void log_parking_flow_result(const char* label, const FlowParkingResult& r,
-    const ParkingWeights& w)
+    const ParkingWeights& w, double beta)
 {
     const int tasks = static_cast<int>(std::count_if(
         r.assigned_tasks.begin(), r.assigned_tasks.end(), [](int t){return t!=-1;}));
@@ -2120,7 +2134,7 @@ void log_parking_flow_result(const char* label, const FlowParkingResult& r,
               << " tasks=" << tasks << " parking=" << idle
               << " candidates=" << r.candidate_count
               << " stay=" << staying
-              << " B=" << w.B << " b_c=" << w.b_c << " b_t=" << w.b_t
+              << " beta=" << beta << " B=" << w.B << " b_c=" << w.b_c << " b_t=" << w.b_t
               << " graph_ms=" << r.graph_ms
               << " solver_ms=" << r.solve_ms
               << " extraction_ms=" << r.extract_ms << std::endl;
@@ -2179,7 +2193,7 @@ void schedule_plan_flow_dummy_combined(
         env->dummy_parking_allocation[a] = {r.parking_goals[i]};
         agent_guide_path[a] = r.paths[i];
     }
-    log_parking_flow_result("parking-second-flow",r,weights);
+    log_parking_flow_result("parking-second-flow",r,weights,env->parking_beta);
 }
 
 // -------------------------------------------------------------------------
@@ -2292,7 +2306,7 @@ void schedule_plan_flow_joint_task_parking(
             (static_cast<double>(kParkingCostScale) * r.task_movement_steps);
     if (!use_traffic)
         avg_task_step_cost_for_parking = 1.0;
-    log_parking_flow_result("task-and-parking-one-flow",r,weights);
+    log_parking_flow_result("task-and-parking-one-flow",r,weights,env->parking_beta);
 }
 
 

@@ -76,8 +76,14 @@ Select a parking strategy with `--parkingModel N`:
 | 7 | Task assignment first, then parking flow with combined clearance and traffic penalties |
 | 8 | One joint flow assigning tasks and parking goals |
 
-Models 7 and 8 use hard-coded weights `B=16`, `b_c=1`, and `b_t=0.1`
-in `TaskScheduler::plan`. Model 7 retains the separate `schedule_plan_flow`
+Models 5–8 use `B = beta * (map width + map height) / 3.0`, computed once
+during scheduler initialization. Configure `beta` with `--parkingBeta` (default
+`0.75`; finite and non-negative). This gives `B=22.5` on warehouseSmall,
+`B=32` on random64 and `B=160` on sortationLarge. Logs include both
+`beta` and the effective `B`. Explicit `B` arguments remain available in the
+C++ parking APIs; omitting `B` uses the initialized map-dependent value.
+
+Model 7 retains the separate `schedule_plan_flow`
 task assignment. Model 8 skips it and calls `schedule_plan_flow_joint_task_parking`
 directly. The joint objective can trade task travel distance against parking cost
 while assigning as many tasks as possible and preserving already-opened tasks.
@@ -91,9 +97,9 @@ including protected task targets. An all-zero field contributes zero traffic cos
 The traffic term is skipped when `b_t=0`; clearance work is skipped when `b_c=0`.
 Traffic-weighted movement costs and task-assignment semantics are unchanged.
 
-Model 6 uses `b_c=0`, `B=16`, and `b_t=0.1`. Its C++ function now takes
-`B` and `b_t` as its last two arguments. Models 7 and 8 use `B=16`, `b_c=1`,
-and `b_t=0.1`; the corresponding parameters remain available in their C++ APIs.
+Model 6 uses `b_c=0` and `b_t=0.1`. Model 7 uses `b_c=1`, `b_t=0.5`,
+and model 8 uses `b_c=1`, `b_t=0.1`, as configured in `TaskScheduler::plan`.
+These coefficients remain independent of `beta` and configurable in the C++ APIs.
 The former model 9 has been removed; select models 6–8 for traffic-based parking.
 
 Clearance preprocessing stores one shared table of `(double clearance, int tie-breaker)`.
@@ -132,6 +138,9 @@ or oversized parking costs are rejected rather than clamped.
 ```
 
 ## Multi-step commits
+
+Result files use compact JSON (no indentation or formatting whitespace) at all
+output detail levels. The fields and values are unchanged.
 
 The result JSON includes `parking`, an array indexed by simulation timestep:
 

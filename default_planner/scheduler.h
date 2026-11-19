@@ -21,6 +21,7 @@ using ClearanceTable = std::vector<std::tuple<double,int>>;
 // Models 7 and 8 need only the table, so skip the sorted-cell ranking.
 // Load/save a validated disk cache beside env->map_path when provided.
 void schedule_initialize(int preprocess_time_limit, SharedEnvironment* env);
+double calculate_parking_strength(int rows, int cols, double beta = 0.75);
 
 // new_only is reserved for future use; it currently has no effect in these APIs.
 void schedule_plan_flow(int time_limit, std::vector<int> & proposed_schedule,  SharedEnvironment* env, std::vector<Double4> background_flow, bool use_traffic, bool new_only);
@@ -29,7 +30,7 @@ void schedule_plan_flow_dummy_all(int time_limit, SharedEnvironment* env, std::v
 // Traffic-only uses B * avg_step_cost * b_t * T / mean_nonzero_T.
 void schedule_plan_flow_dummy_traffic(int time_limit, SharedEnvironment* env,
     std::vector<Double4> background_flow, bool use_traffic, bool new_only,
-    double B = 16.0, double b_t = 0.1);
+    double B, double b_t = 0.1);
 // Reset parking-related preprocessing between simulations.
 void reset_combined_parking_model();
 
@@ -37,11 +38,39 @@ void reset_combined_parking_model();
 // An all-zero traffic field contributes zero. Disabled terms skip preprocessing.
 // Two-flow approach:
 // Run task assignment first, then assign parking goals to idle agents.
-void schedule_plan_flow_dummy_combined( int time_limit, SharedEnvironment* env, const std::vector<Double4>& background_flow, bool use_traffic, bool new_only, double B = 16.0, double b_c = 1.0, double b_t = 0.1);
+void schedule_plan_flow_dummy_combined( int time_limit, SharedEnvironment* env, const std::vector<Double4>& background_flow, bool use_traffic, bool new_only, double B, double b_c = 1.0, double b_t = 0.1);
 
 // One-flow approach:
 // Jointly assign tasks and parking goals.
-void schedule_plan_flow_joint_task_parking(int time_limit, std::vector<int>& proposed_schedule, SharedEnvironment* env, const std::vector<Double4>& background_flow, bool use_traffic, bool new_only, double B = 16.0, double b_c = 1.0, double b_t = 0.1);
+void schedule_plan_flow_joint_task_parking(int time_limit, std::vector<int>& proposed_schedule, SharedEnvironment* env, const std::vector<Double4>& background_flow, bool use_traffic, bool new_only, double B, double b_c = 1.0, double b_t = 0.1);
+
+// Default calls use B computed by schedule_initialize. The overloads above
+// retain an explicit B for controlled experiments, including B=0.
+inline void schedule_plan_flow_dummy_all(int time_limit, SharedEnvironment* env,
+    std::vector<Double4> background_flow, bool use_traffic, bool new_only)
+{
+    schedule_plan_flow_dummy_all(time_limit, env, std::move(background_flow),
+                                use_traffic, new_only, env->parking_strength);
+}
+inline void schedule_plan_flow_dummy_traffic(int time_limit, SharedEnvironment* env,
+    std::vector<Double4> background_flow, bool use_traffic, bool new_only)
+{
+    schedule_plan_flow_dummy_traffic(time_limit, env, std::move(background_flow),
+                                    use_traffic, new_only, env->parking_strength);
+}
+inline void schedule_plan_flow_dummy_combined(int time_limit, SharedEnvironment* env,
+    const std::vector<Double4>& background_flow, bool use_traffic, bool new_only)
+{
+    schedule_plan_flow_dummy_combined(time_limit, env, background_flow,
+                                     use_traffic, new_only, env->parking_strength);
+}
+inline void schedule_plan_flow_joint_task_parking(int time_limit,
+    std::vector<int>& proposed_schedule, SharedEnvironment* env,
+    const std::vector<Double4>& background_flow, bool use_traffic, bool new_only)
+{
+    schedule_plan_flow_joint_task_parking(time_limit, proposed_schedule, env,
+        background_flow, use_traffic, new_only, env->parking_strength);
+}
 
 unordered_map<int,unordered_map<int,int>> compute_heuristics(SharedEnvironment* env, std::vector<Int4> background_flow, vector<pair<int,int>> current_id_assignment, unordered_map<int,list<int>> task_loc_ids, int max_num_tasks);
 void printDIMACS(ListDigraph& g, ListDigraph::Node source, ListDigraph::Node sink, vector<ListDigraph::Node>& workers, vector<ListDigraph::Node>& tasks, ListDigraph::ArcMap<int>& capacity, ListDigraph::ArcMap<double>& cost);

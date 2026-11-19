@@ -53,4 +53,6 @@ public:
     // 5 all-cell clearance, 6 traffic, 7 combined parking after task flow,
     // 8 joint task/parking flow.
     int parking_model = 1;
+    double parking_beta = 0.75; // Configure before scheduler initialization.
+    double parking_strength = 0.0; // B, computed once from the map dimensions.
 };
