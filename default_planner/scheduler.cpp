@@ -324,7 +324,8 @@ static void build_sort_clearance(const SharedEnvironment* env, int rows, int col
     refresh_sorted_cells_by_clearance(env);
 }
 
-static void build_sort_clearance_with_update(const SharedEnvironment* env, int rows, int cols)
+static void build_sort_clearance_with_update(const SharedEnvironment* env, int rows, int cols,
+                                            bool build_ranking = true)
 {
     const int map_size = static_cast<int>(env->map.size());
 
@@ -333,7 +334,8 @@ static void build_sort_clearance_with_update(const SharedEnvironment* env, int r
     map_clearance.assign(map_size, std::make_tuple(0, 0));
 
     sorted_cell_ids_by_clearance.clear();
-    sorted_cell_ids_by_clearance.reserve(map_size);
+    if (build_ranking)
+        sorted_cell_ids_by_clearance.reserve(map_size);
 
     ClearanceTable last_temp_clearance;
 
@@ -372,27 +374,27 @@ static void build_sort_clearance_with_update(const SharedEnvironment* env, int r
 
         // Mark selected location as obstacle for the next iteration.
         // Persist the clearance that was actually used when this location was selected.
-        sorted_cell_ids_by_clearance.push_back(best_loc);
+        if (build_ranking)
+            sorted_cell_ids_by_clearance.push_back(best_loc);
         map_clearance[best_loc] = temp_clearance[best_loc];
         selected[best_loc] = true;
         temp_map[best_loc] = 1;
     }
 
-    // Safety fallback: ensure sorted_cell_ids_by_clearance always contains all map cells.
-    if (static_cast<int>(sorted_cell_ids_by_clearance.size()) < map_size)
+    // Safety fallback for any cells not selected by the iterative construction.
+    for (int loc = 0; loc < map_size; ++loc)
     {
-        for (int loc = 0; loc < map_size; ++loc)
+        if (!selected[loc])
         {
-            if (!selected[loc])
-            {
+            if (build_ranking)
                 sorted_cell_ids_by_clearance.push_back(loc);
-                if (!last_temp_clearance.empty())
-                    map_clearance[loc] = last_temp_clearance[loc];
-            }
+            if (!last_temp_clearance.empty())
+                map_clearance[loc] = last_temp_clearance[loc];
         }
     }
 
-    refresh_clearance_levels();
+    if (build_ranking)
+        refresh_clearance_levels();
 }
 
 void calculate_neighbourhood_clearance(const SharedEnvironment* env, double decay, double min_weight)
@@ -410,11 +412,14 @@ static void ensure_parking_clearance(const SharedEnvironment* env)
     const int cols = env->cols;
     const int map_size = static_cast<int>(env->map.size());
 
+    const bool build_ranking = env->parking_model != 7 && env->parking_model != 8;
     // Use iterative update mode: each selected top-clearance cell is blocked before
-    // computing the next one, producing a spread-out clearance ranking.
-    build_sort_clearance_with_update(env, rows, cols);
+    // computing the next one. This defines the values even when no ranking is needed.
+    build_sort_clearance_with_update(env, rows, cols, build_ranking);
     // Comment out this call to use the original iterative clearance and ranking.
-    calculate_neighbourhood_clearance(env);
+    map_clearance = calculate_neighbourhood_clearance(env, map_clearance);
+    if (build_ranking)
+        refresh_sorted_cells_by_clearance(env);
     parking_clearance_ready = true;
 
     cout << "[DEBUG] Clearance table:" << endl;
@@ -427,6 +432,9 @@ static void ensure_parking_clearance(const SharedEnvironment* env)
         }
         cout << endl;
     }
+
+    if (!build_ranking)
+        return;
 
     cout << "[DEBUG] Cells sorted by clearance (high->low): ";
     for (int cell_id : sorted_cell_ids_by_clearance)
@@ -457,8 +465,9 @@ void schedule_initialize(int preprocess_time_limit, SharedEnvironment* env)
     sorted_cell_clearance_levels.clear();
 
     // Random/stay/traffic-only parking needs no geometric clearance table.
-    // Combined APIs decide from their weights when a parking call is made.
-    if (env->parking_model == 3 || env->parking_model == 4 || env->parking_model == 5)
+    // Prepare combined/joint clearance here too, outside the online planning budget.
+    if (env->parking_model == 3 || env->parking_model == 4 || env->parking_model == 5 ||
+        env->parking_model == 7 || env->parking_model == 8)
         ensure_parking_clearance(env);
 }
 

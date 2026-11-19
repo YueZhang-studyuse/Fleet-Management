@@ -373,7 +373,36 @@ void BaseSystem::saveResults(const string &fileName, int screen) const
     }
 
     std::ofstream f(fileName,std::ios_base::trunc |std::ios_base::out);
-    f << std::setw(4) << js;
+    f << "{\n";
+    for (auto field = js.begin(); field != js.end(); ++field)
+    {
+        if (field != js.begin())
+            f << ",\n";
+        f << "    " << json(field.key()).dump() << ": ";
+        if (field.key() == "parking")
+        {
+            // Keep each timestep compact while retaining one row per step.
+            f << '[';
+            for (size_t t = 0; t < parking_history.size(); ++t)
+                f << (t == 0 ? "\n" : ",\n") << "        "
+                  << json(parking_history[t]).dump();
+            if (!parking_history.empty())
+                f << "\n    ";
+            f << ']';
+        }
+        else
+        {
+            // Preserve the usual four-space indentation for all other fields.
+            const string formatted = field.value().dump(4);
+            for (char ch : formatted)
+            {
+                f << ch;
+                if (ch == '\n')
+                    f << "    ";
+            }
+        }
+    }
+    f << "\n}";
 
 }
 

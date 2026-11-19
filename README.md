@@ -97,6 +97,10 @@ and `b_t=0.1`; the corresponding parameters remain available in their C++ APIs.
 The former model 9 has been removed; select models 6–8 for traffic-based parking.
 
 Clearance preprocessing stores one shared table of `(double clearance, int tie-breaker)`.
+Models 3–5, 7 and 8 build it during initialization, before timestep 0, so its
+construction counts toward preprocessing rather than the online planning budget.
+Models 7 and 8 skip the sorted-cell ranking but retain the same iterative
+clearance values and neighbourhood calculation. Models 1, 2 and 6 skip the table.
 After the iterative table is built, `calculate_neighbourhood_clearance(env)`
 replaces it with distance-decayed neighbourhood scores and refreshes its ranking.
 The default decay is 0.5, using Chebyshev rings 1–6 and zero tie-breakers.

@@ -17,8 +17,8 @@ namespace DefaultPlanner{
 
 using ClearanceTable = std::vector<std::tuple<double,int>>;
 
-// Precompute iterative and neighbourhood clearance for parking models 3, 4 and 5.
-// Combined parking APIs prepare it lazily if their active weights need it.
+// Precompute iterative and neighbourhood clearance for parking models 3, 4, 5, 7 and 8.
+// Models 7 and 8 need only the table, so skip the sorted-cell ranking.
 void schedule_initialize(int preprocess_time_limit, SharedEnvironment* env);
 
 // new_only is reserved for future use; it currently has no effect in these APIs.
