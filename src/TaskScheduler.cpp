@@ -61,7 +61,7 @@ void TaskScheduler::plan(int time_limit, std::vector<int> & proposed_schedule)
     {
         // Tasks are fixed by the first flow; combine clearance and traffic
         // penalties when choosing parking goals for the remaining idle agents.
-        DefaultPlanner::schedule_plan_flow_dummy_combined(limit, env, background_flow, use_traffic, new_only, 16.0, 1.0, 0.1);
+        DefaultPlanner::schedule_plan_flow_dummy_combined(limit, env, background_flow, use_traffic, new_only, 16.0, 1.0, 0.5);
     }
 }
 
