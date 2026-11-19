@@ -3,6 +3,8 @@
 #include <future>
 #include <stdexcept>
 #include <thread>
+#include <streambuf>
+#include <zlib.h>
 #include "CompetitionSystem.h"
 #include <boost/tokenizer.hpp>
 #include "SharedEnv.h"
@@ -16,6 +18,64 @@ namespace
 {
     // Fixed grace period per planning call; does not scale with commitWindow.
     constexpr auto PLANNING_TIMEOUT_TOLERANCE = std::chrono::milliseconds(5);
+
+    // Stream JSON through zlib with bounded serialization-buffer memory.
+    class GzipOutputBuffer : public std::streambuf
+    {
+        gzFile file = nullptr;
+        char buffer[64 * 1024];
+
+        void flush_buffer()
+        {
+            const auto size = static_cast<unsigned int>(pptr() - pbase());
+            if (size && gzwrite(file, pbase(), size) != static_cast<int>(size))
+            {
+                int code;
+                throw std::runtime_error(string("Cannot write gzip results: ") + gzerror(file, &code));
+            }
+            setp(buffer, buffer + sizeof(buffer));
+        }
+
+    protected:
+        int_type overflow(int_type ch) override
+        {
+            flush_buffer();
+            if (!traits_type::eq_int_type(ch, traits_type::eof()))
+            {
+                *pptr() = traits_type::to_char_type(ch);
+                pbump(1);
+            }
+            return traits_type::not_eof(ch);
+        }
+        int sync() override
+        {
+            flush_buffer();
+            return 0;
+        }
+
+    public:
+        explicit GzipOutputBuffer(const string& filename)
+        {
+            file = gzopen(filename.c_str(), "wb");
+            if (!file)
+                throw std::runtime_error("Cannot open gzip results: " + filename);
+            setp(buffer, buffer + sizeof(buffer));
+        }
+        ~GzipOutputBuffer() override
+        {
+            if (file)
+                gzclose(file);
+        }
+        void finish()
+        {
+            flush_buffer();
+            const int status = gzclose(file);
+            file = nullptr;
+            if (status != Z_OK)
+                throw std::runtime_error("Cannot finish gzip results (zlib status " +
+                                         std::to_string(status) + ")");
+        }
+    };
 }
 
 
@@ -118,14 +178,16 @@ void BaseSystem::simulate(int simulation_time)
     auto advance = [this](vector<Action>& actions)
     {
         const auto& assignment = task_manager.get_current_assignment();
-        parking_history.emplace_back();
+        vector<int> parking_agents;
         for (int a = 0; a < num_of_agents; a++)
         {
             if (assignment[a] != -1)
                 solution_costs[a]++;
             else
-                parking_history.back().push_back(a);
+                parking_agents.push_back(a);
         }
+        if (parking_history.empty() || parking_history.back().second != parking_agents)
+            parking_history.emplace_back(simulator.get_curr_timestep(), std::move(parking_agents));
         auto states = simulator.move(actions);
         task_manager.update_tasks(states, simulator.get_curr_timestep());
         simulator.sync_shared_env(env);
@@ -212,7 +274,7 @@ void BaseSystem::initialize()
 }
 
 
-void BaseSystem::saveResults(const string &fileName, int screen) const
+void BaseSystem::saveResults(const string &fileName, int screen, bool gzip) const
 {
     json js;
     // Save action model
@@ -243,7 +305,10 @@ void BaseSystem::saveResults(const string &fileName, int screen) const
     js["numScheduleErrors"] = task_manager.get_number_errors();
 
     js["numEntryTimeouts"] = total_timetous;
-    js["parking"] = parking_history;
+    js["simulationSteps"] = simulator.get_curr_timestep();
+    js["parking"] = json::array();
+    for (const auto& change : parking_history)
+        js["parking"].push_back({{"t", change.first}, {"agents", change.second}});
 
     json planning_times = json::array();
     for (double time: planner_times)
@@ -372,9 +437,26 @@ void BaseSystem::saveResults(const string &fileName, int screen) const
         js["tasks"] = tasks;
     }
 
-    std::ofstream f(fileName,std::ios_base::trunc |std::ios_base::out);
-    // Stream compact JSON without allocating an additional serialized string.
-    f << js;
+    if (gzip)
+    {
+        string output_name = fileName;
+        if (output_name.size() < 3 || output_name.compare(output_name.size() - 3, 3, ".gz") != 0)
+            output_name += ".gz";
+        GzipOutputBuffer buffer(output_name);
+        std::ostream output(&buffer);
+        output.exceptions(std::ios::badbit | std::ios::failbit);
+        output << js;
+        output.flush();
+        buffer.finish();
+    }
+    else
+    {
+        std::ofstream output;
+        output.exceptions(std::ios::badbit | std::ios::failbit);
+        output.open(fileName, std::ios::trunc | std::ios::out | std::ios::binary);
+        output << js;
+        output.close();
+    }
 
 }
 

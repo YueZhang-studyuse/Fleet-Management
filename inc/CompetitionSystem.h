@@ -67,7 +67,8 @@ public:
     void plan(int & timeout_timesteps);
 
     //void saveSimulationIssues(const string &fileName) const;
-    void saveResults(const string &fileName, int screen) const;
+    // With gzip enabled, append .gz unless the supplied filename already has it.
+    void saveResults(const string &fileName, int screen, bool gzip = false) const;
 
 
 protected:
@@ -99,9 +100,9 @@ protected:
 
     //for evaluation
     vector<int> solution_costs;
-    // parking_history[t]: unassigned agents before action t -> t+1, after
-    // accepting any schedule at t. Includes committed steps and timeout waits.
-    vector<vector<int>> parking_history;
+    // Changes in the unassigned-agent set before action t -> t+1, after
+    // accepting any schedule at t. Each entry holds (timestep, agent IDs).
+    vector<pair<int, vector<int>>> parking_history;
     list<double> planner_times; 
     bool fast_mover_feasible = true;
 

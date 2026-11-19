@@ -11,27 +11,34 @@ task_order: e-s
 sampling: independent uniform E and S cells
 numpy_seed: 20261120
 python_random_seed: 20261120
-team_sizes: &id001
-- 3000
+team_sizes:
+- 2000
+- 4000
 - 6000
-- 9000
+- 8000
+- 10000
 - 12000
-- 15000
-- 18000
-num_tasks_reveal: *id001
+num_tasks_reveal:
+- 2000
+- 4000
+- 6000
+- 8000
+- 10000
+- 12000
 filename_pattern: sortation_medium_<numTasksReveal>_<teamSize>.json
 agent_density:
-  3000: 0.136861
+  2000: 0.091241
+  4000: 0.182482
   6000: 0.273723
-  9000: 0.410584
+  8000: 0.364964
+  10000: 0.456204
   12000: 0.547445
-  15000: 0.684307
-  18000: 0.821168
 additional_agent_seeds:
+  2000: 2026114000
+  4000: 2026116000
   6000: 2026118000
-  9000: 2026121000
+  8000: 2026120000
+  10000: 2026122000
   12000: 2026124000
-  15000: 2026127000
-  18000: 2026130000
 reveal_policy: 'Full Cartesian product: every reveal count paired with every team
   size'

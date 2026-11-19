@@ -20,12 +20,13 @@ $ cd your_submission_repo
 
 - [cmake >= 3.16](https://cmake.org/)
 - [libboost >= 1.49.0](https://www.boost.org/)
+- zlib development library (for gzip result output).
 - Python3 >= 3.11 and [pybind11](https://pybind11.readthedocs.io/en/stable/) >=2.10.1 are recommanded for python interface user.
 
 Install dependencies on Ubuntu or Debian Linux:
 ```shell
 sudo apt-get update
-sudo apt-get install build-essential libboost-all-dev python3-dev python3-pybind11 
+sudo apt-get install build-essential libboost-all-dev zlib1g-dev python3-dev python3-pybind11
 ```
 
 [Homebrew](https://brew.sh/) is recomanded for installing dependencies on Mac OS.
@@ -140,22 +141,37 @@ or oversized parking costs are rejected rather than clamped.
 ## Multi-step commits
 
 Result files use compact JSON (no indentation or formatting whitespace) at all
-output detail levels. The fields and values are unchanged.
+output detail levels. Enable lossless gzip compression with `--gzip`:
 
-The result JSON includes `parking`, an array indexed by simulation timestep:
-
-```json
-{"parking": [[1, 3], [0, 1, 3], []]}
+```shell
+./build/lifelong --inputFile input.json --output results.json --gzip
 ```
 
-`parking[t]` lists the zero-based agent IDs with no assigned task at the start
-of step `t -> t+1`, after any new schedule has been validated and accepted.
-For example, the first entry above means agents 1 and 3 are unassigned at
-timestep 0. An empty entry means every agent has a task. These agents may be
-moving toward parking goals; the list does not imply they are stationary.
-The history includes every executed step, including timeout waits, and is
-included at all output detail levels. Its length is the number of simulated
-steps; a zero-step simulation produces `[]`.
+This writes `results.json.gz` directly. An output filename already ending in
+`.gz` is used as-is. Without `--gzip`, output remains plain compact JSON.
+Compression also applies to the existing Ctrl+C save path. Building requires
+the zlib development library, detected by CMake.
+
+The result JSON includes `parking`, an ordered array of change points:
+
+```json
+{"simulationSteps":40,"parking":[{"t":0,"agents":[1,3]},{"t":20,"agents":[3]},{"t":35,"agents":[]}]}
+```
+
+Each entry lists the zero-based agent IDs without a task at the start of step
+`t -> t+1`, after accepting any new schedule. It applies until the next change,
+or until `simulationSteps` for the final entry. In the example, agents 1 and 3
+are unassigned for steps 0–19, only agent 3 for steps 20–34, and all agents have
+tasks for steps 35–39. The list describes assignment status, not whether agents
+are moving. The first executed step always records an entry, including when
+its agent list is empty; unchanged steps are omitted. Changes during committed
+actions and timeout waits are both captured. `simulationSteps` is the actual
+number of executed steps (not task-cost makespan), available at all detail levels.
+A zero-step run produces `"simulationSteps":0,"parking":[]`.
+
+Readers of the former per-step parking array must now select the last entry
+whose `t` is no greater than the requested step. Gzip readers must decompress
+before parsing JSON, for example with Python's `gzip.open(path, "rt")`.
 
 Use `--commitWindow W` (or `-w W`) to schedule and plan once per W simulated
 steps. `--planTimeLimit T` remains the budget **per step**, in milliseconds;

@@ -40,7 +40,7 @@ public:
 
     vector<State> get_current_state(){ return curr_states; }
 
-    int get_curr_timestep() {return timestep;}
+    int get_curr_timestep() const {return timestep;}
 
     bool get_all_valid(){ return all_valid;}
 

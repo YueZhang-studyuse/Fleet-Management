@@ -29,7 +29,7 @@ std::unique_ptr<BaseSystem> system_ptr;
 void sigint_handler(int a)
 {
     fprintf(stdout, "stop the simulation...\n");
-    system_ptr->saveResults(vm["output"].as<std::string>(),vm["outputScreen"].as<int>());
+    system_ptr->saveResults(vm["output"].as<std::string>(),vm["outputScreen"].as<int>(),vm["gzip"].as<bool>());
     _exit(0);
 }
 
@@ -46,6 +46,7 @@ int main(int argc, char **argv)
     desc.add_options()("help", "produce help message")
         ("inputFile,i", po::value<std::string>()->required(), "input file name")
         ("output,o", po::value<std::string>()->default_value("./output.json"), "output results from the evaluation into a JSON formated file. If no file specified, the default name is 'output.json'")
+        ("gzip", po::bool_switch()->default_value(false), "gzip-compress result JSON; append .gz to the output filename if needed")
         ("outputScreen,c", po::value<int>()->default_value(1), "the level of details in the output file, 1--showing all the output, 2--ignore the events and tasks, 3--ignore the events, tasks, errors, planner times, starts and paths")
         ("simulationTime,s", po::value<int>()->default_value(5000), "run simulation")
         ("fileStoragePath,f", po::value<std::string>()->default_value(""), "the large file storage path")
@@ -196,7 +197,7 @@ int main(int argc, char **argv)
     system_ptr->simulate(vm["simulationTime"].as<int>());
 
 
-    system_ptr->saveResults(vm["output"].as<std::string>(),vm["outputScreen"].as<int>());
+    system_ptr->saveResults(vm["output"].as<std::string>(),vm["outputScreen"].as<int>(),vm["gzip"].as<bool>());
 
     delete model;
     delete logger;
