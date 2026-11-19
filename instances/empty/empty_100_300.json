@@ -1,8 +1,0 @@
-{
-  "mapFile": "maps/empty-32-32.map",
-  "agentFile": "agents/empty_32_32_300.agents",
-  "teamSize": 300,
-  "taskFile": "tasks/empty_32_32.tasks",
-  "numTasksReveal": 100,
-  "version": "2024 LoRR"
-}
