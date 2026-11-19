@@ -103,6 +103,27 @@ and model 8 uses `b_c=1`, `b_t=0.1`, as configured in `TaskScheduler::plan`.
 These coefficients remain independent of `beta` and configurable in the C++ APIs.
 The former model 9 has been removed; select models 6–8 for traffic-based parking.
 
+Parking-flow models 4–8 print a common `[parking-summary]` line after each
+successful call, alongside their existing solver diagnostics. `method` identifies
+`preselected`, `clearance`, `traffic`, `combined`, or `joint`; `timestep` identifies
+the planning step. The shared fields are:
+
+| Field | Meaning |
+|---|---|
+| `parking` | Number of agents assigned parking destinations |
+| `stay`, `moved` | Destinations equal to / different from the agent's current cell |
+| `stay_fraction` | `stay / parking` |
+| `relocation_steps` | Sum of parking guide-path edge counts |
+| `avg_relocation_steps` | Mean over all parking agents, including those staying |
+| `avg_moved_relocation_steps` | Mean over agents assigned a different cell |
+| `max_relocation_steps` | Longest parking guide path, measured in edges |
+
+These are planned spatial distances, not executed PIBT movement or waiting time.
+Joint-flow statistics exclude task-assigned agents and their paths. Calls with
+no parking agents report zero counts and averages; an all-stay call reports a
+stay fraction of 1 and zero relocation distances. Existing timing, cost, clearance
+and traffic diagnostics remain available in their original log lines.
+
 Clearance preprocessing stores one shared table of `(double clearance, int tie-breaker)`.
 Models 3–5, 7 and 8 build it during initialization, before timestep 0, so its
 construction counts toward preprocessing rather than the online planning budget.
@@ -244,8 +265,20 @@ to window 1, and omitting `--domains` runs `warehouseSmall:1`. Conflicting
 windows for the same domain are rejected. Output filenames include `_w5`,
 `_w2`, etc. so different windows remain distinguishable.
 
-The `empty` domain is also supported. Select parking models inside `run_exp.py`,
-alongside the other sweep settings:
+Supported domains are `empty`, `random`, `room`, `warehouseSmall`,
+`warehouseLarge`, `sortationLarge`, `sortation_small`, `sortation_smallmedium`,
+and `sortation_medium`. Domain names match folders under `instances`;
+`sortation_smallmedium` also recognizes its current `sortation_medium_...json`
+filenames. `--skipLess` supports domain names containing underscores.
+
+The sweep script always enables `--gzip` and stores results as `.json.gz`;
+logs and cout remain plain text. For example:
+
+```shell
+python3 run_exp.py --domains room:2 sortation_small:3 sortation_smallmedium:5 sortation_medium:5 --skipLess
+```
+
+Select parking models inside `run_exp.py`, alongside the other sweep settings:
 
 ```python
 PARKING_MODELS = [5, 6, 7, 8]

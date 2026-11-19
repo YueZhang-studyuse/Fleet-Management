@@ -13,9 +13,14 @@ Examples:
         Run three domains with their own commit windows, keeping only
         instances whose team size is greater than the task-reveal count.
 
+    python3 run_exp.py --domains room:2 sortation_small:3 sortation_smallmedium:5 sortation_medium:5
+        Run the additional domains, each with its own commit window.
+
 Command-line options:
     --domains DOMAIN[:WINDOW] [DOMAIN[:WINDOW] ...]
-        Domains: empty, random, warehouseSmall, warehouseLarge, sortationLarge.
+        Domains: empty, random, room, warehouseSmall, warehouseLarge,
+                 sortationLarge, sortation_small, sortation_smallmedium,
+                 sortation_medium.
         WINDOW is a positive commit window, not a parking-model number.
         A bare name such as empty uses window 1. Default: warehouseSmall:1.
     --skipLess
@@ -35,8 +40,9 @@ Edit these settings inside this script:
     PLAN_TIME_LIMIT             Budget per step in ms; each planning call gets
                                 commitWindow * PLAN_TIME_LIMIT milliseconds.
     PREPROCESS_TIME_LIMIT       Initialization budget in milliseconds.
-    OUTPUT_SCREEN              Result detail level: 1 full, 2 omit events/tasks,
-                                3 also omit errors, times, starts and paths.
+    OUTPUT_SCREEN              Result detail level: 1 full, 2 omit schedules,
+                                errors, events/tasks, 3 also omit starts/paths.
+                                Timing and parking summaries remain included.
     EXPERIMENT_NAME             Subfolder identifying this experiment batch.
     CONTINUE_ON_ERROR           Whether to continue after a failed simulation.
 
@@ -45,6 +51,8 @@ settings. An empty PARKING_MODELS list runs once per other combination and
 omits --parkingModel, allowing the executable's default to apply.
 Results go to outputs/<domain>_sweep/<EXPERIMENT_NAME>/{json,logs,cout}/.
 Filenames include the commit window and, when selected explicitly, parking model.
+Every run enables --gzip and writes compact JSON to a .json.gz file; logs and
+cout remain plain text. Read results with gzip.open(path, "rt") and json.load().
 """
 
 import argparse
@@ -64,6 +72,11 @@ DOMAIN_PREFIXES = {
     "sortationLarge": ("SL", "sortationLarge"),
     "random": ("R", "random"),
     "empty": ("empty",),
+    "room": ("room",),
+    "sortation_small": ("sortation_small",),
+    # Current smallmedium instances retain the sortation_medium filename prefix.
+    "sortation_smallmedium": ("sortation_medium", "sortation_smallmedium"),
+    "sortation_medium": ("sortation_medium",),
 }
 
 # Name this run to keep outputs from different sweeps separated.
@@ -146,9 +159,9 @@ def main() -> int:
         if not instances_dir.is_dir():
             print(f"Instances directory not found: {instances_dir}", file=sys.stderr)
             return 2
-        instance_files = sorted(
+        instance_files = sorted({
             path for pattern in patterns for path in instances_dir.glob(pattern)
-        )
+        })
         if not instance_files:
             print(
                 f"No instance files matching {patterns} under {instances_dir}",
@@ -169,7 +182,7 @@ def main() -> int:
     for domain, instance_files in instances_by_domain.items():
         for instance in instance_files:
             # Instance name is <domain>_<taskReveal>_<teamSize>.
-            parts = instance.stem.split("_")
+            parts = instance.stem.rsplit("_", 2)
             if args.skipLess and len(parts) == 3 and parts[1].isdigit() and parts[2].isdigit():
                 reveal, team_size = int(parts[1]), int(parts[2])
                 if team_size <= reveal:
@@ -182,6 +195,7 @@ def main() -> int:
     run_idx = 0
 
     print(f"Experiment: {EXPERIMENT_NAME}")
+    print("Result format: gzip-compressed JSON (.json.gz)")
     print("Domains: " + ", ".join(
         f"{domain} (commitWindow={window})" for domain, window in domain_windows.items()
     ))
@@ -209,7 +223,7 @@ def main() -> int:
             run_tag = (
                 f"{instance.stem}_m{model}{parking_tag}_w{window}_u{int(use_traffic)}"
             )
-            out_file = json_dir / f"{run_tag}.json"
+            out_file = json_dir / f"{run_tag}.json.gz"
             log_file = log_dir / f"{run_tag}.log"
             cout_file = cout_dir / f"{run_tag}.txt"
 
@@ -219,6 +233,7 @@ def main() -> int:
                 str(instance),
                 "-o",
                 str(out_file),
+                "--gzip",
                 "-s",
                 str(SIMULATION_TIME),
                 "-t",

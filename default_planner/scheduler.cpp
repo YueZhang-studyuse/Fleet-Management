@@ -642,6 +642,40 @@ struct FlowParkingResult {
     double extract_ms = 0.0;
 };
 
+// Common diagnostics for successful parking assignments. Count only parking
+// guide paths, including in the joint task/parking flow. These are planned
+// spatial moves, not executed PIBT moves or waiting timesteps.
+static void log_parking_summary(const SharedEnvironment* env, const char* method)
+{
+    const size_t parking = env->dummy_parking_allocation.size();
+    size_t staying = 0;
+    long long relocation_steps = 0;
+    long long moved_steps = 0;
+    long long max_steps = 0;
+    for (const auto& allocation : env->dummy_parking_allocation)
+    {
+        const int agent = allocation.first;
+        const auto& path = agent_guide_path.at(agent);
+        const long long steps = static_cast<long long>(path.size()) - 1;
+        const bool stays = allocation.second.front() == env->curr_states[agent].location;
+        staying += stays;
+        relocation_steps += steps;
+        if (!stays)
+            moved_steps += steps;
+        max_steps = std::max(max_steps, steps);
+    }
+    const size_t moved = parking - staying;
+    std::cout << "[parking-summary] method=" << method
+              << " timestep=" << env->curr_timestep
+              << " parking=" << parking
+              << " stay=" << staying << " moved=" << moved
+              << " stay_fraction=" << (parking ? static_cast<double>(staying) / parking : 0.0)
+              << " relocation_steps=" << relocation_steps
+              << " avg_relocation_steps=" << (parking ? static_cast<double>(relocation_steps) / parking : 0.0)
+              << " avg_moved_relocation_steps=" << (moved ? static_cast<double>(moved_steps) / moved : 0.0)
+              << " max_relocation_steps=" << max_steps << std::endl;
+}
+
 
 void schedule_plan_flow(int time_limit, std::vector<int> & proposed_schedule,  SharedEnvironment* env, std::vector<Double4> background_flow, bool use_traffic, bool new_only)
 {
@@ -990,6 +1024,7 @@ void schedule_plan_flow_dummy(int time_limit, SharedEnvironment* env, std::vecto
     if (num_workers == 0)
     {
         env->dummy_parking_allocation.clear();
+        log_parking_summary(env, "preselected");
         return;
     }
     ensure_parking_clearance(env);
@@ -1226,6 +1261,7 @@ void schedule_plan_flow_dummy(int time_limit, SharedEnvironment* env, std::vecto
     const auto end_time = std::chrono::high_resolution_clock::now();
     const double elapsed_time = std::chrono::duration<double>(end_time - start_time).count();
     std::cout << "Dummy parking flow solving time: "<< elapsed_time << " seconds" << std::endl;
+    log_parking_summary(env, "preselected");
 }
 
 // One pass over the current snapshot, including protected task destinations in
@@ -1308,6 +1344,7 @@ void schedule_plan_flow_dummy_all(int time_limit, SharedEnvironment* env,
     if (num_workers == 0)
     {
         env->dummy_parking_allocation.clear();
+        log_parking_summary(env, "clearance");
         return;
     }
     ensure_parking_clearance(env);
@@ -1562,6 +1599,7 @@ void schedule_plan_flow_dummy_all(int time_limit, SharedEnvironment* env,
               << " relocation_steps=" << total_relocation_steps
               << " avg_clearance=" << total_selected_clearance / num_workers
               << std::endl;
+    log_parking_summary(env, "clearance");
 }
 
 // Traffic-only full-candidate parking using min-cost flow.
@@ -1617,6 +1655,7 @@ void schedule_plan_flow_dummy_traffic(
     if (num_workers == 0)
     {
         env->dummy_parking_allocation.clear();
+        log_parking_summary(env, "traffic");
         return;
     }
 
@@ -1878,6 +1917,7 @@ void schedule_plan_flow_dummy_traffic(
               << " relocation_steps=" << total_relocation_steps
               << " avg_target_traffic=" << total_selected_traffic / num_workers
               << std::endl;
+    log_parking_summary(env, "traffic");
 }
 
 FlowParkingResult solve_parking_flow(
@@ -2182,6 +2222,7 @@ void schedule_plan_flow_dummy_combined(
     }
     if (idle.empty()) {
         env->dummy_parking_allocation.clear();
+        log_parking_summary(env, "combined");
         return;
     }
     const auto r = solve_parking_flow(env,background_flow,use_traffic,weights,
@@ -2194,6 +2235,7 @@ void schedule_plan_flow_dummy_combined(
         agent_guide_path[a] = r.paths[i];
     }
     log_parking_flow_result("parking-second-flow",r,weights,env->parking_beta);
+    log_parking_summary(env, "combined");
 }
 
 // -------------------------------------------------------------------------
@@ -2307,6 +2349,7 @@ void schedule_plan_flow_joint_task_parking(
     if (!use_traffic)
         avg_task_step_cost_for_parking = 1.0;
     log_parking_flow_result("task-and-parking-one-flow",r,weights,env->parking_beta);
+    log_parking_summary(env, "joint");
 }
 
 
