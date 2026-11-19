@@ -17,6 +17,9 @@ public:
     int rows;
     int cols;
     std::string map_name;
+    // Source map file, used to keep static preprocessing caches beside the map.
+    // Empty for in-memory maps that should not use a disk cache.
+    std::string map_path;
     std::vector<int> map;
     std::string file_storage_path;
 

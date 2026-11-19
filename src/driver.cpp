@@ -138,6 +138,7 @@ int main(int argc, char **argv)
     Grid grid(base_folder + map_path);
 
     planner->env->map_name = map_path.substr(map_path.find_last_of("/") + 1);
+    planner->env->map_path = std::filesystem::absolute(base_folder + map_path).string();
 
 
     string file_storage_path = vm["fileStoragePath"].as<std::string>();

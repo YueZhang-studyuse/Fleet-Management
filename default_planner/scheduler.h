@@ -19,6 +19,7 @@ using ClearanceTable = std::vector<std::tuple<double,int>>;
 
 // Precompute iterative and neighbourhood clearance for parking models 3, 4, 5, 7 and 8.
 // Models 7 and 8 need only the table, so skip the sorted-cell ranking.
+// Load/save a validated disk cache beside env->map_path when provided.
 void schedule_initialize(int preprocess_time_limit, SharedEnvironment* env);
 
 // new_only is reserved for future use; it currently has no effect in these APIs.
@@ -61,7 +62,7 @@ ClearanceTable calculate_neighbourhood_clearance(
     const ClearanceTable& iterative_clearance,
     double decay = 0.5, double min_weight = 0.01);
 // Replace the shared table with neighbourhood scores and refresh its ranking.
-// Comment out this overload's call after the iterative build for the baseline.
+// Initialization uses kUseNeighbourhoodClearance to select the cached baseline.
 void calculate_neighbourhood_clearance(
     const SharedEnvironment* env, double decay = 0.5, double min_weight = 0.01);
 const std::vector<int>& get_sorted_cell_ids_by_clearance();

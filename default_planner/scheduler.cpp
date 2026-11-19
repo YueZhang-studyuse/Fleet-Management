@@ -3,6 +3,9 @@
 #include <algorithm>
 #include <boost/heap/pairing_heap.hpp>
 #include <cmath>
+#include <cstdint>
+#include <filesystem>
+#include <fstream>
 #include <limits>
 #include <numeric>
 #include <queue>
@@ -39,6 +42,116 @@ struct ParkingWeights {
 // One immutable map per simulation. Initialized eagerly for clearance modes,
 // or on first use when a combined parking call enables its clearance term.
 static bool parking_clearance_ready = false;
+
+// Bump the version whenever the clearance algorithm changes. These settings
+// are also stored in the cache, so changing them automatically rebuilds it.
+constexpr int kClearanceCacheVersion = 1;
+constexpr bool kUseNeighbourhoodClearance = true;
+constexpr double kNeighbourhoodDecay = 0.5;
+constexpr double kNeighbourhoodMinWeight = 0.01;
+
+static nlohmann::json clearance_cache_metadata(const SharedEnvironment* env)
+{
+    // Stable FNV-1a fingerprint of the loaded map (not std::hash, which may
+    // differ across processes). Dimensions are checked separately below.
+    uint64_t fingerprint = UINT64_C(14695981039346656037);
+    for (int cell : env->map)
+    {
+        const auto value = static_cast<uint32_t>(cell);
+        for (int shift = 0; shift < 32; shift += 8)
+        {
+            fingerprint ^= (value >> shift) & 0xff;
+            fingerprint *= UINT64_C(1099511628211);
+        }
+    }
+    return {{"version", kClearanceCacheVersion}, {"rows", env->rows}, {"cols", env->cols},
+            {"map_fingerprint", std::to_string(fingerprint)},
+            {"neighbourhood", kUseNeighbourhoodClearance},
+            {"decay", kNeighbourhoodDecay}, {"min_weight", kNeighbourhoodMinWeight}};
+}
+
+static bool load_clearance_cache(const std::filesystem::path& path,
+                                 const nlohmann::json& metadata, const SharedEnvironment* env)
+{
+    std::ifstream input(path);
+    if (!input)
+        return false;
+    try
+    {
+        const auto cached = nlohmann::json::parse(input);
+        if (cached.at("metadata") != metadata)
+            return false;
+        const auto& cells = cached.at("clearance");
+        if (!cells.is_array() || cells.size() != env->map.size())
+            return false;
+        ClearanceTable loaded;
+        loaded.reserve(cells.size());
+        for (size_t loc = 0; loc < cells.size(); ++loc)
+        {
+            const auto& cell = cells[loc];
+            if (!cell.is_array() || cell.size() != 2 || !cell[0].is_number() ||
+                !cell[1].is_number_integer())
+                return false;
+            const double value = cell[0].get<double>();
+            const double tie = cell[1].get<double>();
+            if (!std::isfinite(value) || value < 0 || tie < 0 ||
+                tie > std::numeric_limits<int>::max() ||
+                (env->map[loc] == 1 ? value != 0 : value <= 0) ||
+                (kUseNeighbourhoodClearance && tie != 0))
+                return false;
+            loaded.emplace_back(value, static_cast<int>(tie));
+        }
+        map_clearance = std::move(loaded);
+        return true;
+    }
+    catch (const nlohmann::json::exception&)
+    {
+        return false; // Malformed or incompatible cache: recompute normally.
+    }
+}
+
+static void save_clearance_cache(const std::filesystem::path& path,
+                                 const nlohmann::json& metadata)
+{
+    // Publish only a complete file. A unique staging directory lets concurrent
+    // experiment processes populate the same map cache without partial reads.
+    std::filesystem::path staging;
+    try
+    {
+        std::random_device random;
+        for (int attempt = 0; attempt < 10; ++attempt)
+        {
+            auto candidate = std::filesystem::path(path.string() + ".tmp." +
+                std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()) +
+                "." + std::to_string(random()));
+            if (std::filesystem::create_directory(candidate))
+            {
+                staging = std::move(candidate);
+                break;
+            }
+        }
+        if (staging.empty())
+            throw std::runtime_error("could not create cache staging directory");
+        const auto temporary = staging / "clearance.json";
+        std::ofstream output(temporary);
+        output.exceptions(std::ios::failbit | std::ios::badbit);
+        output << nlohmann::json{{"metadata", metadata}, {"clearance", map_clearance}};
+        output.close();
+        std::filesystem::rename(temporary, path);
+        std::filesystem::remove(staging);
+        cout << "[clearance] Saved cache: " << path << endl;
+    }
+    catch (const std::exception& error)
+    {
+        std::cerr << "[clearance] Cannot save cache " << path << ": " << error.what()
+                  << "; using computed clearance for this run.\n";
+        if (!staging.empty())
+        {
+            std::error_code ignored;
+            std::filesystem::remove_all(staging, ignored);
+        }
+    }
+}
 
 // Check a numeric cost before converting to a 64-bit LEMON arc cost.
 // Conservative bound protects network-simplex's accumulation of costs in
@@ -413,11 +526,22 @@ static void ensure_parking_clearance(const SharedEnvironment* env)
     const int map_size = static_cast<int>(env->map.size());
 
     const bool build_ranking = env->parking_model != 7 && env->parking_model != 8;
-    // Use iterative update mode: each selected top-clearance cell is blocked before
-    // computing the next one. This defines the values even when no ranking is needed.
-    build_sort_clearance_with_update(env, rows, cols, build_ranking);
-    // Comment out this call to use the original iterative clearance and ranking.
-    map_clearance = calculate_neighbourhood_clearance(env, map_clearance);
+    const std::filesystem::path cache_path = env->map_path.empty() ?
+        std::filesystem::path{} : std::filesystem::path(env->map_path + ".clearance.json");
+    const auto metadata = clearance_cache_metadata(env);
+    if (!cache_path.empty() && load_clearance_cache(cache_path, metadata, env))
+        cout << "[clearance] Loaded cache: " << cache_path << endl;
+    else
+    {
+        // The iterative selection defines the values even without a ranking.
+        // Sort only after computing or loading the final table below.
+        build_sort_clearance_with_update(env, rows, cols, false);
+        if (kUseNeighbourhoodClearance)
+            map_clearance = calculate_neighbourhood_clearance(
+                env, map_clearance, kNeighbourhoodDecay, kNeighbourhoodMinWeight);
+        if (!cache_path.empty())
+            save_clearance_cache(cache_path, metadata);
+    }
     if (build_ranking)
         refresh_sorted_cells_by_clearance(env);
     parking_clearance_ready = true;
