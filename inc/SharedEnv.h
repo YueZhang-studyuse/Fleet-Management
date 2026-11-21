@@ -55,4 +55,5 @@ public:
     int parking_model = 1;
     double parking_beta = 0.75; // Configure before scheduler initialization.
     double parking_strength = 0.0; // B, computed once from the map dimensions.
+    bool boundary_aware_clearance = true; // Treat outside-map cells as walls in base clearance.
 };

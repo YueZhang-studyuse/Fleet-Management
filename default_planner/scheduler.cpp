@@ -102,7 +102,7 @@ static bool parking_clearance_ready = false;
 
 // Bump the version whenever the clearance algorithm changes. These settings
 // are also stored in the cache, so changing them automatically rebuilds it.
-constexpr int kClearanceCacheVersion = 1;
+constexpr int kClearanceCacheVersion = 2;
 constexpr bool kUseNeighbourhoodClearance = true;
 constexpr double kNeighbourhoodDecay = 0.5;
 constexpr double kNeighbourhoodMinWeight = 0.01;
@@ -123,6 +123,7 @@ static nlohmann::json clearance_cache_metadata(const SharedEnvironment* env)
     }
     return {{"version", kClearanceCacheVersion}, {"rows", env->rows}, {"cols", env->cols},
             {"map_fingerprint", std::to_string(fingerprint)},
+            {"boundary_aware", env->boundary_aware_clearance},
             {"neighbourhood", kUseNeighbourhoodClearance},
             {"decay", kNeighbourhoodDecay}, {"min_weight", kNeighbourhoodMinWeight}};
 }
@@ -259,7 +260,8 @@ struct Node
     };  // used by OPEN (heap) to compare nodes (top of the heap has min f-val, and then highest g-val)
 };
 
-static ClearanceTable calculate_map_clearance(const std::vector<int>& map, int rows, int cols)
+static ClearanceTable calculate_map_clearance(const std::vector<int>& map, int rows, int cols,
+                                               bool boundary_aware)
 {
     const int map_size = static_cast<int>(map.size());
     std::vector<int> clearance_distance(map_size, std::numeric_limits<int>::max());
@@ -335,6 +337,10 @@ static ClearanceTable calculate_map_clearance(const std::vector<int>& map, int r
         int cell_clearance = clearance_distance[loc];
         int r = loc / cols;
         int c = loc % cols;
+        // The nearest outside-map cell is one step beyond the outermost row/column.
+        // Combine its Chebyshev distance with the nearest real/virtual obstacle.
+        if (boundary_aware)
+            cell_clearance = std::min(cell_clearance, std::min({r + 1, rows - r, c + 1, cols - c}));
         int top = std::max(0, r - cell_clearance);
         int bottom = std::min(rows - 1, r + cell_clearance);
         int left = std::max(0, c - cell_clearance);
@@ -344,6 +350,14 @@ static ClearanceTable calculate_map_clearance(const std::vector<int>& map, int r
                            - pref(top, right + 1)
                            - pref(bottom + 1, left)
                            + pref(top, left);
+        if (boundary_aware)
+        {
+            // Outside cells are walls for the obstacle-count tie-breaker too.
+            // The radius stops at the nearest wall, so these lie on its outer ring.
+            const long long side = 2LL * cell_clearance + 1;
+            const long long inside_area = 1LL * (bottom - top + 1) * (right - left + 1);
+            obstacle_count += static_cast<int>(side * side - inside_area);
+        }
 
         clearance[loc] = std::make_tuple(cell_clearance, obstacle_count);
     }
@@ -490,7 +504,7 @@ void refresh_sorted_cells_by_clearance(const SharedEnvironment* env, double min_
 
 static void build_sort_clearance(const SharedEnvironment* env, int rows, int cols)
 {
-    map_clearance = calculate_map_clearance(env->map, rows, cols);
+    map_clearance = calculate_map_clearance(env->map, rows, cols, env->boundary_aware_clearance);
     refresh_sorted_cells_by_clearance(env);
 }
 
@@ -514,7 +528,7 @@ static void build_sort_clearance_with_update(const SharedEnvironment* env, int r
     for (int step = 0; step < map_size; ++step)
     {
         // Recompute clearance after each virtual placement so ranking adapts over time.
-        ClearanceTable temp_clearance = calculate_map_clearance(temp_map, rows, cols);
+        ClearanceTable temp_clearance = calculate_map_clearance(temp_map, rows, cols, env->boundary_aware_clearance);
         last_temp_clearance = temp_clearance;
 
         int best_loc = -1;
@@ -577,6 +591,8 @@ static void ensure_parking_clearance(const SharedEnvironment* env)
 {
     if (parking_clearance_ready)
         return;
+
+    cout << "[clearance] boundary_aware=" << (env->boundary_aware_clearance ? "true" : "false") << endl;
 
     const int rows = env->rows;
     const int cols = env->cols;

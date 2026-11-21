@@ -90,7 +90,33 @@ directly. The joint objective can trade task travel distance against parking cos
 while assigning as many tasks as possible and preserving already-opened tasks.
 `--useTraffic` independently controls traffic-aware movement costs.
 
-Models 6–8 use the normalized additive destination penalty
+Sequential parking models 4–7 include the first task-assignment flow's pickup
+traffic by default. The task flow still uses delivery-only traffic; after it
+solves, positive grid movement-arc flows are added to a temporary parking field
+using the outgoing E/S/W/N convention. The second flow uses that field for both
+traffic-weighted movement (when `--useTraffic true`) and normalized destination
+traffic penalties. The mean positive vertex traffic is recomputed from the
+augmented field. Source/sink arcs are excluded, and pickup traffic never persists
+into the next scheduling call. Delivery guides contain only opened tasks, while
+the first flow assigns unopened pickups, so those contributions are disjoint.
+
+Use `--pickupTraffic false` to recover delivery-only sequential parking, or
+`--pickupTraffic true` to enable augmentation explicitly. Model 8's joint flow
+and models 1–3 ignore this option. Model 7 retains `b_c=1`, `b_t=0.5` and the
+map-adaptive B. Compare otherwise identical runs, for example:
+
+```shell
+./build/lifelong --inputFile input.json --parkingModel 7 --pickupTraffic false --output baseline.json --gzip
+./build/lifelong --inputFile input.json --parkingModel 7 --pickupTraffic true --output pickup.json --gzip
+```
+
+`[pickup-traffic]` logs total delivery flow, added pickup flow and the mean
+positive vertex traffic before/after augmentation. Flow totals count directed
+edge traversals, not agents. `[parking-summary]` reports requested relocation
+distances; the final
+`[simulation-summary]` reports completed tasks and tasks per simulated step.
+
+Models 5–8 use the normalized additive destination penalty
 `B * avg_step_cost * (b_c * F_C + b_t * T / mean_T)`.
 `T` is the sum of the four directional background-flow values; `mean_T` is
 computed once per parking call over all traversable cells with positive traffic,
@@ -98,9 +124,20 @@ including protected task targets. An all-zero field contributes zero traffic cos
 The traffic term is skipped when `b_t=0`; clearance work is skipped when `b_c=0`.
 Traffic-weighted movement costs and task-assignment semantics are unchanged.
 
-Model 6 uses `b_c=0` and `b_t=0.1`. Model 7 uses `b_c=1`, `b_t=0.5`,
-and model 8 uses `b_c=1`, `b_t=0.1`, as configured in `TaskScheduler::plan`.
+Models 5–7 all call `schedule_plan_flow_dummy_combined` after task assignment:
+
+| Model | `b_c` | `b_t` |
+|---|---:|---:|
+| 5 (clearance only) | 1 | 0 |
+| 6 (traffic only) | 0 | 0.5 |
+| 7 (clearance + traffic) | 1 | 0.5 |
+| 8 (joint task + parking) | 1 | 0.5 |
+
+Model 8 retains its joint task-and-parking solver and delivery-only traffic input.
+The separate model 5/6 functions have been removed. Both remaining penalty APIs
+default to `b_c=1`, `b_t=0.5`; pass explicit coefficients for component ablations.
 These coefficients remain independent of `beta` and configurable in the C++ APIs.
+Equal-cost assignments may differ after switching to the shared solver.
 The former model 9 has been removed; select models 6–8 for traffic-based parking.
 
 Parking-flow models 4–8 print a common `[parking-summary]` line after each
@@ -121,8 +158,20 @@ the planning step. The shared fields are:
 These are planned spatial distances, not executed PIBT movement or waiting time.
 Joint-flow statistics exclude task-assigned agents and their paths. Calls with
 no parking agents report zero counts and averages; an all-stay call reports a
-stay fraction of 1 and zero relocation distances. Existing timing, cost, clearance
-and traffic diagnostics remain available in their original log lines.
+stay fraction of 1 and zero relocation distances. Models 5–7 share the `[parking-second-flow]` solver diagnostics, including timing,
+average movement cost, and active clearance/traffic statistics.
+
+Models 5–8 also print a `[parking-penalty-table]` grid at the first parking
+calculation and at steps 100, 200, 300, etc. If a commit window or timeout skips
+a boundary, the first parking calculation after it prints the current table,
+labelled with its actual timestep. Calls with no parking demand skip the table.
+Rows/columns follow the map's row-major layout; `#` marks obstacles and `P`
+marks protected task destinations excluded from parking. Numeric values are
+the calculated destination penalties before the existing scale-by-100 rounding,
+including B, the average movement-cost reference, and any active clearance and
+traffic terms. The header records these parameters, and
+`[parking-penalty-table-end]` marks the end of the grid. Models 1–4 do not use
+these destination penalties.
 
 Clearance preprocessing stores one shared table of `(double clearance, int tie-breaker)`.
 Models 3–5, 7 and 8 build it during initialization, before timestep 0, so its
@@ -133,11 +182,22 @@ After the iterative table is built, `calculate_neighbourhood_clearance`
 replaces it with distance-decayed neighbourhood scores; models 3–5 then sort it.
 The default decay is 0.5, using Chebyshev rings 1–6 and zero tie-breakers.
 Both clearance-based preselection and parking penalties use the updated table.
+
+Base clearance treats outside-map cells as walls by default. A traversable edge
+cell has base clearance 1; interior cells use the smaller of the nearest obstacle
+distance and the distance to an outside wall. The iterative obstacle-count
+tie-breaker also counts outside walls. Disable this with
+`--boundaryAwareClearance false` to restore the previous calculation, or explicitly
+enable it with `--boundaryAwareClearance true`. The C++ setting is
+`SharedEnvironment::boundary_aware_clearance`, configured before initialization.
+Neighbourhood smoothing is unchanged: it only averages in-map traversable cells,
+so a final smoothed edge score can exceed 1.
+
 The final table is cached beside the source map, for example
 `instances/empty/maps/empty-32-32.map.clearance.json`. Later runs load it during
 initialization and sort only when the model needs a ranking. Models share the
 cache regardless of agent count, tasks or commit window. Map contents, dimensions,
-algorithm version and neighbourhood settings are checked before loading; missing,
+algorithm version, boundary-awareness flag and neighbourhood settings are checked before loading; missing,
 invalid or stale caches are recomputed and replaced. Cache writes are atomic;
 write failures leave the computed table available for the current run.
 Generated caches are ignored by Git. Maps without `SharedEnvironment::map_path`
@@ -257,19 +317,36 @@ ctest --test-dir build --output-on-failure
 For experiment sweeps, give each domain its own commit window in `run_exp.py`:
 
 ```shell
-python3 run_exp.py --domains warehouseSmall:5 random:2 --skipLess
+python3 run_exp.py --domains warehouseSmallMix:5 random:2 --skipLess
 ```
 
 Every instance in a domain uses that domain's window. Bare domain names default
-to window 1, and omitting `--domains` runs `warehouseSmall:1`. Conflicting
+to window 1, and omitting `--domains` runs `warehouseSmallMix:1`. Conflicting
 windows for the same domain are rejected. Output filenames include `_w5`,
 `_w2`, etc. so different windows remain distinguishable.
 
-Supported domains are `empty`, `random`, `room`, `warehouseSmall`,
+Supported domains are `empty`, `random`, `room`, `warehouseSmallES`,
+`warehouseSmallSE`, `warehouseSmallMix`,
 `warehouseLarge`, `sortationLarge`, `sortation_small`, `sortation_smallmedium`,
 and `sortation_medium`. Domain names match folders under `instances`;
 `sortation_smallmedium` also recognizes its current `sortation_medium_...json`
 filenames. `--skipLess` supports domain names containing underscores.
+
+For a partial sweep, edit the script's list of `(agents, task-reveal count)` pairs:
+
+```python
+AGENT_TASK_PAIRS = [(300, 100), (500, 200)]
+```
+
+This selects only matching instances in each requested domain, for example
+`WS_100_300.json` and `WS_200_500.json`. Explicit pairs override `--skipLess`;
+the default empty list runs all instances subject to that flag. Duplicate pairs
+run only once, and unavailable pairs are skipped. If no selected domain has any
+matching instance, the script reports an error before launching simulations.
+
+```shell
+python3 run_exp.py --domains warehouseSmallES:5 warehouseSmallSE:5 warehouseSmallMix:5
+```
 
 The sweep script always enables `--gzip` and stores results as `.json.gz`;
 logs and cout remain plain text. For example:
@@ -285,7 +362,7 @@ PARKING_MODELS = [5, 6, 7, 8]
 ```
 
 ```shell
-python3 run_exp.py --domains empty:3 warehouseSmall:5
+python3 run_exp.py --domains empty:3 warehouseSmallMix:5
 ```
 
 Use model numbers 1–8. The default `PARKING_MODELS = []` leaves

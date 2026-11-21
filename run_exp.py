@@ -3,32 +3,44 @@
 
 Examples:
     python3 run_exp.py
-        Run warehouseSmall with commit window 1 and the settings below.
+        Run warehouseSmallMix with commit window 1 and the settings below.
 
     python3 run_exp.py --domains empty:3
         Run instances/empty/ with commitWindow=3: schedule and plan once,
         then execute three simulation steps before replanning.
 
-    python3 run_exp.py --domains empty:3 random:2 warehouseSmall:5 --skipLess
+    python3 run_exp.py --domains empty:3 random:2 warehouseSmallMix:5 --skipLess
         Run three domains with their own commit windows, keeping only
         instances whose team size is greater than the task-reveal count.
 
     python3 run_exp.py --domains room:2 sortation_small:3 sortation_smallmedium:5 sortation_medium:5
         Run the additional domains, each with its own commit window.
 
+    python3 run_exp.py --domains warehouseSmallES:5 warehouseSmallSE:5 warehouseSmallMix:5
+        Run all three small-warehouse domains with commit window 5.
+
 Command-line options:
     --domains DOMAIN[:WINDOW] [DOMAIN[:WINDOW] ...]
-        Domains: empty, random, room, warehouseSmall, warehouseLarge,
+        Domains: empty, random, room, warehouseSmallES, warehouseSmallSE,
+                 warehouseSmallMix, warehouseLarge,
                  sortationLarge, sortation_small, sortation_smallmedium,
                  sortation_medium.
         WINDOW is a positive commit window, not a parking-model number.
-        A bare name such as empty uses window 1. Default: warehouseSmall:1.
+        A bare name such as empty uses window 1. Default: warehouseSmallMix:1.
     --skipLess
-        Skip instances with team size <= task-reveal count.
+        Skip instances with team size <= task-reveal count when
+        AGENT_TASK_PAIRS is empty. Explicit pairs override this option.
     -h, --help
         Show command-line help without running experiments.
 
 Edit these settings inside this script:
+    AGENT_TASK_PAIRS = []        Run all instances, filtered by --skipLess if set.
+    AGENT_TASK_PAIRS = [(300, 100), (500, 200)]
+                                Run only these (agents, task-reveal count) pairs
+                                in each selected domain, overriding --skipLess.
+                                These match WS_100_300.json and WS_200_500.json
+                                in the small-warehouse domains. Missing pairs
+                                are skipped; duplicate pairs run only once.
     PARKING_MODELS = []          Use the executable's default parking model.
     PARKING_MODELS = [7]         Run sequential additive clearance/traffic parking.
     PARKING_MODELS = [5, 6, 7, 8] Sweep clearance-only, normalized traffic-only,
@@ -67,7 +79,9 @@ EXE_PATH = Path("./build/lifelong")
 INSTANCES_ROOT = Path("./instances")
 OUTPUT_ROOT = Path("./outputs")
 DOMAIN_PREFIXES = {
-    "warehouseSmall": ("WS",),
+    "warehouseSmallES": ("WS",),
+    "warehouseSmallSE": ("WS",),
+    "warehouseSmallMix": ("WS",),
     "warehouseLarge": ("WL", "warehouseLarge"),
     "sortationLarge": ("SL", "sortationLarge"),
     "random": ("R", "random"),
@@ -92,6 +106,11 @@ OUTPUT_SCREEN = 1
 SCHEDULE_MODELS = [1]          # -m / --scheduleModel
 PARKING_MODELS = []            # --parkingModel; empty uses the executable's default
 USE_TRAFFIC_VALUES = [True]   # -u / --useTraffic
+
+# Optional subset, shared by all selected domains: (agents, task-reveal count).
+# Example: [(300, 100), (500, 200)]. Explicit pairs override --skipLess.
+# Empty means all discovered instances, subject to --skipLess.
+AGENT_TASK_PAIRS = []
 
 # Set True if you want to keep running after a failed command.
 CONTINUE_ON_ERROR = False
@@ -127,17 +146,17 @@ def main() -> int:
         nargs="+",
         type=parse_domain,
         metavar="DOMAIN[:WINDOW]",
-        default=[("warehouseSmall", 1)],
+        default=[("warehouseSmallMix", 1)],
         help=(
-            "Domains with individual commit windows, e.g. warehouseSmall:5 random:2. "
-            "Bare names use window 1 (default: warehouseSmall:1). "
+            "Domains with individual commit windows, e.g. warehouseSmallMix:5 random:2. "
+            "Bare names use window 1 (default: warehouseSmallMix:1). "
             f"Domains: {', '.join(DOMAIN_PREFIXES)}."
         ),
     )
     parser.add_argument(
         "--skipLess",
         action="store_true",
-        help="Skip cases where team size <= task reveal.",
+        help="Skip cases where team size <= task reveal unless AGENT_TASK_PAIRS is set.",
     )
     args = parser.parse_args()
     domain_windows = {}
@@ -147,6 +166,12 @@ def main() -> int:
         domain_windows[domain] = window
     domains = list(domain_windows)
     parking_models = list(dict.fromkeys(PARKING_MODELS)) or [None]
+    selected_pairs = set()
+    for pair in AGENT_TASK_PAIRS:
+        if (not isinstance(pair, (tuple, list)) or len(pair) != 2 or
+                any(type(value) is not int or value <= 0 for value in pair)):
+            parser.error("AGENT_TASK_PAIRS must contain (agents, task-reveal count) pairs of positive integers.")
+        selected_pairs.add(tuple(pair))
 
     if not EXE_PATH.exists():
         print(f"Executable not found: {EXE_PATH}", file=sys.stderr)
@@ -179,16 +204,31 @@ def main() -> int:
     )
 
     jobs = []
+    matched_pairs = set()
     for domain, instance_files in instances_by_domain.items():
         for instance in instance_files:
             # Instance name is <domain>_<taskReveal>_<teamSize>.
             parts = instance.stem.rsplit("_", 2)
-            if args.skipLess and len(parts) == 3 and parts[1].isdigit() and parts[2].isdigit():
+            if selected_pairs or args.skipLess:
+                if len(parts) != 3 or not parts[1].isdigit() or not parts[2].isdigit():
+                    print(f"Cannot read task/agent counts from instance name: {instance}", file=sys.stderr)
+                    return 2
                 reveal, team_size = int(parts[1]), int(parts[2])
-                if team_size <= reveal:
+                if selected_pairs:
+                    if (team_size, reveal) not in selected_pairs:
+                        continue
+                    matched_pairs.add((team_size, reveal))
+                elif team_size <= reveal:
                     print(f"Skipping {instance.name}: team size {team_size} <= task reveal {reveal}")
                     continue
             jobs.append((domain, instance))
+
+    missing_pairs = selected_pairs - matched_pairs
+    if missing_pairs:
+        print(f"Pairs not found in any selected domain (agents, tasks): {sorted(missing_pairs)}", file=sys.stderr)
+    if selected_pairs and not jobs:
+        print("No instances match AGENT_TASK_PAIRS; no experiments were run.", file=sys.stderr)
+        return 2
 
     total_runs = len(jobs) * len(combos)
     failures = 0
@@ -202,6 +242,8 @@ def main() -> int:
     print("Parking models: " + ", ".join(
         str(model) if model is not None else "executable default" for model in parking_models
     ))
+    if selected_pairs:
+        print(f"Selected (agents, task-reveal count) pairs: {sorted(selected_pairs)} (--skipLess ignored)")
     for domain in domains:
         print(f"Run folder: {OUTPUT_ROOT / f'{domain}_sweep' / EXPERIMENT_NAME}")
     print(f"Instance jobs: {len(jobs)}")

@@ -60,6 +60,7 @@ int main(int argc, char **argv)
         ("scheduleModel,m", po::value<int>()->default_value(1), "scheduler model, 1- flow, 2- flow with history edge cost, 3- greedy")
         ("parkingModel", po::value<int>()->default_value(1), "parking model: 1- random, 2- stay, 3- clearance preselection, 4- clearance parking flow, 5- all-cell clearance parking flow, 6- traffic parking flow, 7- task flow then combined clearance/traffic parking flow, 8- joint task/parking flow")
         ("parkingBeta", po::value<double>()->default_value(0.75), "parking strength coefficient: B = beta * (map width + height) / 3")
+        ("boundaryAwareClearance", po::value<bool>()->default_value(true)->implicit_value(true), "treat outside-map cells as walls in base clearance; false restores boundary-ignoring clearance (smoothing is unchanged)")
         ("commitWindow,w", po::value<int>()->default_value(1), "number of action steps committed per planner call (positive)");
     clock_t start_time = clock();
     po::store(po::parse_command_line(argc, argv, desc), vm);
@@ -169,6 +170,7 @@ int main(int argc, char **argv)
     planner->env->file_storage_path = file_storage_path;
     planner->env->parking_model = vm["parkingModel"].as<int>();
     planner->env->parking_beta = parking_beta;
+    planner->env->boundary_aware_clearance = vm["boundaryAwareClearance"].as<bool>();
 
     planner->scheduler->set_use_traffic(vm["useTraffic"].as<bool>());
     planner->scheduler->pickup_traffic = vm["pickupTraffic"].as<bool>();
