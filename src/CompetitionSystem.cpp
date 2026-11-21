@@ -230,6 +230,11 @@ void BaseSystem::simulate(int simulation_time)
             total_timetous++;
         }
     }
+    const int steps = simulator.get_curr_timestep();
+    cout << "[simulation-summary] steps=" << steps
+         << " completed_tasks=" << task_manager.num_of_task_finish
+         << " tasks_per_step=" << (steps ? static_cast<double>(task_manager.num_of_task_finish) / steps : 0.0)
+         << endl;
 }
 
 

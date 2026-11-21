@@ -24,6 +24,7 @@ class TaskScheduler
         std::vector<DefaultPlanner::Double4> background_flow;
 
         bool use_traffic = false;
+        bool pickup_traffic = true; // Add first-flow pickup traffic only to sequential parking.
         bool new_only = false; // reserved for future use; currently has no effect
         int solver = 1; //1 matching, 2 flow
 

@@ -24,40 +24,35 @@ void schedule_initialize(int preprocess_time_limit, SharedEnvironment* env);
 double calculate_parking_strength(int rows, int cols, double beta = 0.75);
 
 // new_only is reserved for future use; it currently has no effect in these APIs.
-void schedule_plan_flow(int time_limit, std::vector<int> & proposed_schedule,  SharedEnvironment* env, std::vector<Double4> background_flow, bool use_traffic, bool new_only);
-void schedule_plan_flow_dummy(int time_limit, SharedEnvironment* env, std::vector<Double4> background_flow, bool use_traffic, bool new_only);
-void schedule_plan_flow_dummy_all(int time_limit, SharedEnvironment* env, std::vector<Double4> background_flow, bool use_traffic, bool new_only, double B);
-// Traffic-only uses B * avg_step_cost * b_t * T / mean_nonzero_T.
-void schedule_plan_flow_dummy_traffic(int time_limit, SharedEnvironment* env,
+// Optional output starts as a fresh delivery-only snapshot, then receives the
+// solved pickup movement flow. The task flow itself always uses background_flow.
+void schedule_plan_flow(int time_limit, std::vector<int> & proposed_schedule, SharedEnvironment* env,
     std::vector<Double4> background_flow, bool use_traffic, bool new_only,
-    double B, double b_t = 0.1);
+    std::vector<Double4>* parking_background_flow = nullptr);
+// node_to_maploc contains grid nodes only; terminals and non-grid arcs are ignored.
+// parking_traffic must initially contain delivery-only traffic to avoid double-counting.
+void add_pickup_flow_to_background_traffic(const ListDigraph& graph,
+    const ListDigraph::ArcMap<int>& flow, const boost::unordered_map<int, int>& node_to_maploc,
+    const SharedEnvironment* env, std::vector<Double4>& parking_traffic);
+double calculate_mean_nonzero_traffic(const SharedEnvironment* env,
+    const std::vector<Double4>& background_flow, std::vector<double>& vertex_traffic);
+void schedule_plan_flow_dummy(int time_limit, SharedEnvironment* env, std::vector<Double4> background_flow, bool use_traffic, bool new_only);
 // Reset parking-related preprocessing between simulations.
 void reset_combined_parking_model();
 
 // Parking scores: B * avg_step_cost * (b_c * F_C + b_t * T / mean_nonzero_T).
 // An all-zero traffic field contributes zero. Disabled terms skip preprocessing.
+// Models 5/6/7 share this solver: (b_c,b_t) = (1,0)/(0,0.5)/(1,0.5).
 // Two-flow approach:
 // Run task assignment first, then assign parking goals to idle agents.
-void schedule_plan_flow_dummy_combined( int time_limit, SharedEnvironment* env, const std::vector<Double4>& background_flow, bool use_traffic, bool new_only, double B, double b_c = 1.0, double b_t = 0.1);
+void schedule_plan_flow_dummy_combined( int time_limit, SharedEnvironment* env, const std::vector<Double4>& background_flow, bool use_traffic, bool new_only, double B, double b_c = 1.0, double b_t = 0.5);
 
 // One-flow approach:
 // Jointly assign tasks and parking goals.
-void schedule_plan_flow_joint_task_parking(int time_limit, std::vector<int>& proposed_schedule, SharedEnvironment* env, const std::vector<Double4>& background_flow, bool use_traffic, bool new_only, double B, double b_c = 1.0, double b_t = 0.1);
+void schedule_plan_flow_joint_task_parking(int time_limit, std::vector<int>& proposed_schedule, SharedEnvironment* env, const std::vector<Double4>& background_flow, bool use_traffic, bool new_only, double B, double b_c = 1.0, double b_t = 0.5);
 
 // Default calls use B computed by schedule_initialize. The overloads above
 // retain an explicit B for controlled experiments, including B=0.
-inline void schedule_plan_flow_dummy_all(int time_limit, SharedEnvironment* env,
-    std::vector<Double4> background_flow, bool use_traffic, bool new_only)
-{
-    schedule_plan_flow_dummy_all(time_limit, env, std::move(background_flow),
-                                use_traffic, new_only, env->parking_strength);
-}
-inline void schedule_plan_flow_dummy_traffic(int time_limit, SharedEnvironment* env,
-    std::vector<Double4> background_flow, bool use_traffic, bool new_only)
-{
-    schedule_plan_flow_dummy_traffic(time_limit, env, std::move(background_flow),
-                                    use_traffic, new_only, env->parking_strength);
-}
 inline void schedule_plan_flow_dummy_combined(int time_limit, SharedEnvironment* env,
     const std::vector<Double4>& background_flow, bool use_traffic, bool new_only)
 {
