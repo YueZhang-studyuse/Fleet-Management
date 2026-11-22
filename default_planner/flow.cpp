@@ -93,7 +93,7 @@ void update_fw_metrics(TrajLNS& lns)
 }
 
 
-void frank_wolfe(TrajLNS& lns,std::unordered_set<int>& updated, TimePoint timelimit){
+FrankWolfeStats frank_wolfe(TrajLNS& lns,std::unordered_set<int>& updated, TimePoint timelimit){
     update_fw_metrics(lns);
     std::vector<FW_Metric> replan_order = lns.fw_metrics;
     assert(replan_order.size() == lns.env->num_of_agents);
@@ -114,13 +114,12 @@ void frank_wolfe(TrajLNS& lns,std::unordered_set<int>& updated, TimePoint timeli
         return a.rand > b.rand;
     });
 
-    int count=0;
-    int a, index;
+    FrankWolfeStats stats;
     while (std::chrono::steady_clock::now() < timelimit)
     {
-        index = count%lns.env->num_of_agents;
-        a = replan_order[index].id;
-        count++;
+        const auto index = stats.iterations % lns.env->num_of_agents;
+        const int a = replan_order[index].id;
+        ++stats.iterations;
         // if (lns.env->goal_locations[a].empty())
         // {
         //     continue;
@@ -130,9 +129,10 @@ void frank_wolfe(TrajLNS& lns,std::unordered_set<int>& updated, TimePoint timeli
         }
         remove_traj(lns,a);
         update_traj(lns,a);
+        ++stats.replans;
         
     }
-    return;
+    return stats;
 
 }
 

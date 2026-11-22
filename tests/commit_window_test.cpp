@@ -7,11 +7,14 @@
 #include <set>
 #include <stdexcept>
 #include <thread>
+#include <zlib.h>
 
 // Exercise the internal conversion boundary without exposing it in the public
 // scheduler API or constructing a huge flow graph.
 namespace DefaultPlanner {
 long long scale_parking_arc_cost(double unscaled, double safe_scaled_cost);
+double calculate_mean_nonzero_traffic(const SharedEnvironment* env,
+    const std::vector<Double4>& background_flow, std::vector<double>& vertex_traffic);
 }
 
 namespace {
@@ -89,6 +92,121 @@ struct Fixture
     }
     ~Fixture() { std::filesystem::remove_all(directory); }
 };
+
+nlohmann::ordered_json saved_results(Fixture& fixture, int detail = 1)
+{
+    const auto path = fixture.directory / "results.json";
+    fixture.system.saveResults(path.string(), detail);
+    std::ifstream input(path);
+    nlohmann::ordered_json result;
+    input >> result;
+    return result;
+}
+
+void test_parking_history()
+{
+    Fixture f(3, {0, 5}, {{1}, {4}});
+    f.system.set_num_tasks_reveal(2);
+    f.entry->script = [](auto& self, auto& actions, auto& schedule)
+    {
+        if (self.env->curr_timestep == 0)
+        {
+            schedule = {0, -1};
+            actions = {{Action::E, Action::WA}, {Action::WA, Action::WE},
+                       {Action::WA, Action::WA}};
+        }
+        else
+            schedule = {-1, 1}; // Empty batch exercises padded waits.
+        // Planner-local state must not override the accepted assignments.
+        self.env->curr_task_schedule = {-1, -1};
+    };
+    f.system.simulate(5);
+    check(f.system.finished() == 2 && f.system.schedule_errors() == 0,
+          "parking history scenario did not complete its tasks");
+    const auto expected = nlohmann::ordered_json::parse(
+        R"([{"t":0,"agents":[1]},{"t":1,"agents":[0,1]},{"t":3,"agents":[0]},{"t":4,"agents":[0,1]}])");
+    for (int detail : {1, 2, 3})
+    {
+        const auto result = saved_results(f, detail);
+        check(result.at("parking") == expected && result.at("simulationSteps") == 5,
+              "parking JSON must track changes and duration at every detail level");
+    }
+
+    Fixture rejected(1);
+    rejected.entry->script = [](auto& self, auto& actions, auto& schedule)
+    {
+        schedule = {self.env->curr_timestep == 0 ? 0 : 999};
+        actions = {{Action::WA}};
+        self.env->curr_task_schedule = {-1};
+    };
+    rejected.system.simulate(2);
+    check(rejected.system.schedule_errors() == 1, "invalid test schedule was not rejected");
+    check(saved_results(rejected).at("parking") ==
+              nlohmann::ordered_json::parse(R"([{"t":0,"agents":[]}])"),
+          "rejected schedule must retain the actual task assignment in parking history");
+
+    Fixture empty(3);
+    empty.system.simulate(0);
+    check(saved_results(empty).at("parking") == nlohmann::ordered_json::array(),
+          "zero simulated steps must produce an empty parking history");
+    check(saved_results(empty).at("simulationSteps") == 0,
+          "zero-step output must report its duration");
+}
+
+string read_gzip(const std::filesystem::path& path)
+{
+    gzFile input = gzopen(path.string().c_str(), "rb");
+    check(input != nullptr, "gzip result file was not created");
+    string decoded;
+    char chunk[4096];
+    int count;
+    while ((count = gzread(input, chunk, sizeof(chunk))) > 0)
+        decoded.append(chunk, count);
+    const int status = gzclose(input);
+    check(count == 0 && status == Z_OK, "gzip stream was corrupt or incomplete");
+    return decoded;
+}
+
+void test_gzip_results()
+{
+    vector<int> starts(16);
+    std::iota(starts.begin(), starts.end(), 0);
+    Fixture f(2000, starts);
+    f.entry->script = [](auto&, auto&, auto&) {}; // Padded waits, unchanged idle set.
+    f.system.simulate(2000);
+    for (int detail : {1, 2, 3})
+    {
+        const auto expected = saved_results(f, detail);
+        check(expected.at("parking").size() == 1 && expected.at("simulationSteps") == 2000,
+              "unchanged parking must be retained as one change point");
+        const auto path = f.directory / "compressed.json";
+        f.system.saveResults(path.string(), detail, true);
+        const auto compressed_path = std::filesystem::path(path.string() + ".gz");
+        std::ifstream encoded(compressed_path, std::ios::binary);
+        check(encoded.get() == 0x1f && encoded.get() == 0x8b, "result lacks a gzip header");
+        const string decoded = read_gzip(compressed_path);
+        check(decoded == expected.dump(), "gzip output differs from compact plain JSON");
+        check(!std::filesystem::exists(path), "gzip output created an intermediate plain file");
+        if (detail == 1)
+        {
+            check(decoded.size() > 64 * 1024, "gzip test did not exercise buffer flushing");
+            check(std::filesystem::file_size(compressed_path) < decoded.size(),
+                  "repetitive simulation output was not compressed");
+        }
+        const auto explicit_path = f.directory / "explicit.json.gz";
+        f.system.saveResults(explicit_path.string(), detail, true);
+        check(read_gzip(explicit_path) == decoded &&
+              !std::filesystem::exists(explicit_path.string() + ".gz"),
+              "explicit gzip suffix was duplicated or changed output");
+    }
+    for (bool gzip : {false, true})
+    {
+        bool rejected = false;
+        try { f.system.saveResults((f.directory / "missing" / "result.json").string(), 1, gzip); }
+        catch (const std::exception&) { rejected = true; }
+        check(rejected, "output open failure was silently ignored");
+    }
+}
 
 void test_batches_and_horizon()
 {
@@ -188,6 +306,10 @@ void test_timeout_horizon()
     f.system.simulate(3);
     check(f.system.paths()[0] == "R,L,T", "timeout advanced beyond horizon");
     check(f.system.timeouts() == 1 && f.system.timestep() == 3, "timeout count exceeds simulated waits");
+    check(saved_results(f).at("parking") ==
+              nlohmann::ordered_json::parse(R"([{"t":0,"agents":[0]}])") &&
+          saved_results(f).at("simulationSteps") == 3,
+          "timeout waits must extend parking duration without redundant changes");
 }
 
 void test_replanning_after_multiple_timeout_waits()
@@ -406,8 +528,8 @@ void test_clearance_preprocessing()
     env.task_pool.at(0).agent_assigned = 0;
     const vector<DefaultPlanner::Double4> flow(18, DefaultPlanner::Double4{0, 0, 0, 0});
 
-    // Legacy clearance modes must still be ready before planner initialization.
-    vector<std::tuple<int, int>> expected_clearance;
+    // Clearance modes must be ready before planner initialization.
+    DefaultPlanner::ClearanceTable expected_clearance;
     vector<int> expected_ranking;
     for (int model : {3, 4, 5})
     {
@@ -417,11 +539,39 @@ void test_clearance_preprocessing()
               "clearance mode was not preprocessed");
         check(DefaultPlanner::get_sorted_cell_ids_by_clearance().size() == env.map.size(),
               "clearance parking ranking is missing");
+        const auto& table = DefaultPlanner::get_map_clearance();
+        bool fractional = false;
+        for (const auto& cell : table)
+        {
+            check(std::get<1>(cell) == 0, "neighbourhood clearance retained obstacle tie-breakers");
+            fractional = fractional || std::get<0>(cell) != std::floor(std::get<0>(cell));
+        }
+        check(fractional, "shared table discarded fractional neighbourhood scores");
+        const auto& ranking = DefaultPlanner::get_sorted_cell_ids_by_clearance();
+        for (size_t i = 1; i < ranking.size(); ++i)
+            check(std::get<0>(table[ranking[i-1]]) >= std::get<0>(table[ranking[i]]),
+                  "shared ranking was not refreshed after smoothing");
         if (model == 3)
         {
             expected_clearance = DefaultPlanner::get_map_clearance();
             expected_ranking = DefaultPlanner::get_sorted_cell_ids_by_clearance();
         }
+    }
+
+    for (int model : {7, 8})
+    {
+        env.parking_model = model;
+        DefaultPlanner::schedule_initialize(1000, &env);
+        check(DefaultPlanner::get_map_clearance() == expected_clearance,
+              "combined/joint initialization changed or omitted clearance values");
+        check(DefaultPlanner::get_sorted_cell_ids_by_clearance().empty(),
+              "combined/joint initialization unnecessarily built a sorted ranking");
+        // Zero weights must not undo the table prepared during initialization.
+        DefaultPlanner::schedule_plan_flow_dummy_combined(100, &env, flow, false, false, 0, 0, 0);
+        DefaultPlanner::schedule_plan_flow_dummy_combined(100, &env, flow, false, false, 16, 1, 0.1);
+        check(DefaultPlanner::get_map_clearance() == expected_clearance &&
+              DefaultPlanner::get_sorted_cell_ids_by_clearance().empty(),
+              "online parking changed the preprocessed table or built an unused ranking");
     }
 
     for (int model : {1, 2, 6})
@@ -432,7 +582,7 @@ void test_clearance_preprocessing()
               DefaultPlanner::get_sorted_cell_ids_by_clearance().empty(),
               "non-clearance mode still builds a clearance table");
     }
-    DefaultPlanner::schedule_plan_flow_dummy_traffic(100, &env, flow, false, false, 0.1);
+    DefaultPlanner::schedule_plan_flow_dummy_combined(100, &env, flow, false, false, 16, 0, 0.5);
     check(DefaultPlanner::get_map_clearance().empty(), "traffic-only parking computes clearance");
     check(env.dummy_parking_allocation.at(1) == vector<int>({5}), "zero-traffic parking should allow staying");
 
@@ -448,24 +598,389 @@ void test_clearance_preprocessing()
     check(env.curr_task_schedule == vector<int>({0, -1}) && env.dummy_parking_allocation.at(1)[0] != 1,
           "lazy parking changed task assignments or parked on a protected goal");
 
-    // A joint flow assigning every flexible agent to a task needs no parking scores.
+    // Joint mode prepares clearance even before a call that assigns everyone tasks.
+    env.parking_model = 8;
     DefaultPlanner::schedule_initialize(1000, &env);
+    check(DefaultPlanner::get_map_clearance() == expected_clearance,
+          "joint clearance was not built during initialization");
     env.curr_task_schedule = {-1, -1};
     env.task_pool.at(0).agent_assigned = -1;
     env.task_pool.emplace(1, Task(1, {4}, 0));
     vector<int> schedule;
     DefaultPlanner::schedule_plan_flow_joint_task_parking(100, schedule, &env, flow, false, false);
-    check(schedule[0] >= 0 && schedule[1] >= 0 && DefaultPlanner::get_map_clearance().empty(),
-          "joint task-only assignment unnecessarily computes clearance");
+    check(schedule[0] >= 0 && schedule[1] >= 0 &&
+          DefaultPlanner::get_map_clearance() == expected_clearance,
+          "joint task-only assignment changed preprocessed clearance");
 
-    // Removing a task introduces a parking demand, which activates lazy clearance.
+    // Removing a task introduces parking demand, which reuses the same table.
     env.task_pool.erase(1);
     env.curr_task_schedule = {-1, -1};
     DefaultPlanner::schedule_plan_flow_joint_task_parking(100, schedule, &env, flow, false, false);
     check(DefaultPlanner::get_map_clearance() == expected_clearance &&
-          env.dummy_parking_allocation.size() == 1,
-          "joint parking did not initialize clearance on first use");
+          env.dummy_parking_allocation.size() == 1 &&
+          DefaultPlanner::get_sorted_cell_ids_by_clearance().empty(),
+          "joint parking did not reuse clearance without sorting");
 }
+void test_boundary_clearance()
+{
+    using namespace DefaultPlanner;
+    for (auto shape : vector<pair<int, int>>{{1, 1}, {1, 5}, {5, 1}, {5, 5}, {3, 7}})
+    for (int layout : {0, 1, 2})
+    for (bool boundary_aware : {false, true})
+    {
+        SharedEnvironment env;
+        env.rows = shape.first;
+        env.cols = shape.second;
+        env.map.assign(env.rows * env.cols, 0);
+        env.num_of_agents = 0;
+        env.parking_model = 7;
+        env.boundary_aware_clearance = boundary_aware;
+        if (layout == 1)
+            env.map[env.map.size() / 2] = 1;
+        if (layout == 2)
+            for (int r = 0; r < env.rows; ++r)
+                for (int c = 0; c < env.cols; ++c)
+                    if (r == 0 || c == 0 || r == env.rows - 1 || c == env.cols - 1)
+                        env.map[r * env.cols + c] = 1;
+
+        // Independent oracle: enumerate explicit wall cells in a padded grid,
+        // then exhaustively select the best cell after each virtual placement.
+        auto blocked = env.map;
+        vector<bool> selected(env.map.size(), false);
+        ClearanceTable iterative(env.map.size());
+        auto wall = [&](int r, int c) {
+            if (r < 0 || c < 0 || r >= env.rows || c >= env.cols)
+                return boundary_aware;
+            return blocked[r * env.cols + c] == 1;
+        };
+        for (size_t step = 0; step < env.map.size(); ++step)
+        {
+            std::tuple<int, int, int> best{INT_MAX, INT_MAX, INT_MAX};
+            for (int loc = 0; loc < static_cast<int>(env.map.size()); ++loc)
+            {
+                if (selected[loc]) continue;
+                const int r = loc / env.cols, c = loc % env.cols;
+                int distance = env.rows + env.cols;
+                for (int wr = -1; wr <= env.rows; ++wr)
+                    for (int wc = -1; wc <= env.cols; ++wc)
+                        if (wall(wr, wc))
+                            distance = std::min(distance, std::max(std::abs(r-wr), std::abs(c-wc)));
+                int obstacles = 0;
+                for (int wr = r-distance; wr <= r+distance; ++wr)
+                    for (int wc = c-distance; wc <= c+distance; ++wc)
+                        obstacles += wall(wr, wc);
+                best = std::min(best, std::make_tuple(-distance, obstacles, loc));
+            }
+            const auto [negative_distance, obstacles, loc] = best;
+            iterative[loc] = {-negative_distance, obstacles};
+            selected[loc] = true;
+            blocked[loc] = 1;
+        }
+        const auto expected = calculate_neighbourhood_clearance(&env, iterative);
+        env.boundary_aware_clearance = !boundary_aware;
+        check(calculate_neighbourhood_clearance(&env, iterative) == expected,
+              "boundary setting changed smoothing for the same input table");
+        env.boundary_aware_clearance = boundary_aware;
+        schedule_initialize(1000, &env);
+        check(get_map_clearance() == expected,
+              "clearance preprocessing disagrees with explicit outside-wall oracle");
+        if (boundary_aware && layout == 0 && (env.rows == 1 || env.cols == 1))
+            for (const auto& cell : get_map_clearance())
+                check(std::get<0>(cell) == 1.0, "open one-cell-wide maps must have clearance 1");
+    }
+    check(SharedEnvironment{}.boundary_aware_clearance, "boundary-aware clearance must default to enabled");
+}
+
+void test_clearance_disk_cache()
+{
+    Fixture fixture(1);
+    SharedEnvironment env;
+    env.rows = 3;
+    env.cols = 6;
+    env.num_of_agents = 0;
+    env.map.assign(18, 0);
+    env.map[7] = 1;
+    env.parking_model = 7;
+    env.map_path = (fixture.directory / "map").string();
+    const std::filesystem::path path = env.map_path + ".clearance.json";
+    auto read_cache = [&]() {
+        std::ifstream input(path);
+        return nlohmann::json::parse(input);
+    };
+    auto write_cache = [&](const nlohmann::json& value) {
+        std::ofstream(path) << value;
+    };
+    DefaultPlanner::schedule_initialize(1000, &env);
+    const auto expected = DefaultPlanner::get_map_clearance();
+    check(std::filesystem::is_regular_file(path), "missing cache was not saved beside the map");
+    const auto original = read_cache();
+    check(original.at("metadata").at("boundary_aware") == true,
+          "clearance cache omitted the enabled boundary setting");
+    check(original.at("clearance") == nlohmann::json(expected),
+          "saved cache changed clearance precision");
+    const auto old_time = std::filesystem::file_time_type::clock::now() - std::chrono::hours(24);
+    std::filesystem::last_write_time(path, old_time);
+    const auto timestamp = std::filesystem::last_write_time(path);
+    for (int model : {3, 4, 5, 7, 8})
+    {
+        env.parking_model = model;
+        DefaultPlanner::schedule_initialize(1000, &env);
+        check(DefaultPlanner::get_map_clearance() == expected &&
+              std::filesystem::last_write_time(path) == timestamp,
+              "valid clearance cache was recomputed or changed values across parking models");
+        check(DefaultPlanner::get_sorted_cell_ids_by_clearance().empty() == (model >= 7),
+              "loaded clearance did not respect the model's ranking requirement");
+    }
+
+    env.boundary_aware_clearance = false;
+    DefaultPlanner::schedule_initialize(1000, &env);
+    const auto unaware = DefaultPlanner::get_map_clearance();
+    check(unaware != expected && read_cache().at("metadata").at("boundary_aware") == false,
+          "disabling boundary awareness reused the enabled cache");
+    std::filesystem::last_write_time(path, old_time);
+    const auto unaware_timestamp = std::filesystem::last_write_time(path);
+    DefaultPlanner::schedule_initialize(1000, &env);
+    check(DefaultPlanner::get_map_clearance() == unaware &&
+          std::filesystem::last_write_time(path) == unaware_timestamp,
+          "disabled boundary clearance did not reuse its compatible cache");
+    env.boundary_aware_clearance = true;
+    DefaultPlanner::schedule_initialize(1000, &env);
+    check(DefaultPlanner::get_map_clearance() == expected && read_cache() == original,
+          "enabling boundary awareness reused the disabled cache");
+
+    // Each invalid cache must be replaced with a valid one, without publishing
+    // a partially loaded table or silently accepting incompatible metadata.
+    for (int invalid = 0; invalid < 11; ++invalid)
+    {
+        auto damaged = original;
+        switch (invalid)
+        {
+        case 0: damaged["metadata"]["version"] = -1; break;
+        case 1: damaged["metadata"]["rows"] = 99; break;
+        case 2: damaged["metadata"]["decay"] = 0.9; break;
+        case 3: damaged["metadata"]["neighbourhood"] = false; break;
+        case 4: damaged["clearance"].erase(0); break;
+        case 5: damaged["clearance"][0][0] = -1; break;
+        case 6: damaged["clearance"][7][0] = 1; break;
+        case 7: damaged["clearance"][0][1] = 0.5; break;
+        case 8: damaged["clearance"][0][0] = nullptr; break;
+        case 9: damaged["metadata"].erase("boundary_aware"); break;
+        case 10: damaged["metadata"]["boundary_aware"] = false; break;
+        }
+        write_cache(damaged);
+        DefaultPlanner::schedule_initialize(1000, &env);
+        check(DefaultPlanner::get_map_clearance() == expected && read_cache() == original,
+              "invalid clearance cache was not rebuilt correctly");
+    }
+    std::ofstream(path) << "{truncated";
+    DefaultPlanner::schedule_initialize(1000, &env);
+    check(read_cache() == original, "truncated cache was not rebuilt");
+
+    // Same filename and dimensions, different obstacle layout.
+    env.map[8] = 1;
+    DefaultPlanner::schedule_initialize(1000, &env);
+    const auto changed = DefaultPlanner::get_map_clearance();
+    check(read_cache().at("metadata") != original.at("metadata") &&
+          std::get<0>(changed[8]) == 0, "map change reused stale clearance");
+    const auto source_path = env.map_path;
+    env.map_path.clear();
+    DefaultPlanner::schedule_initialize(1000, &env);
+    check(DefaultPlanner::get_map_clearance() == changed,
+          "cached and uncached clearance differ for the changed map");
+
+    env.map_path = source_path;
+    std::filesystem::remove(path);
+    for (int model : {1, 2, 6})
+    {
+        env.parking_model = model;
+        DefaultPlanner::schedule_initialize(1000, &env);
+        check(!std::filesystem::exists(path) && DefaultPlanner::get_map_clearance().empty(),
+              "non-clearance model created a clearance cache");
+    }
+    // A directory at the destination forces publication to fail, including
+    // under privileged test runners where chmod does not prohibit writes.
+    std::filesystem::create_directory(path);
+    env.parking_model = 8;
+    DefaultPlanner::schedule_initialize(1000, &env);
+    check(DefaultPlanner::get_map_clearance() == changed,
+          "cache write failure prevented use of computed clearance");
+    for (const auto& file : std::filesystem::directory_iterator(fixture.directory))
+        check(file.path().filename().string().find(".tmp.") == string::npos,
+              "cache write failure left staging files behind");
+}
+
+void test_neighbourhood_clearance()
+{
+    using DefaultPlanner::calculate_neighbourhood_clearance;
+    SharedEnvironment env;
+    env.rows = 1;
+    env.cols = 3;
+    env.map = {0, 1, 0};
+    DefaultPlanner::ClearanceTable original = {{2, 3}, {0, 0}, {10, 2}};
+    auto values = calculate_neighbourhood_clearance(&env, original);
+    check(std::abs(std::get<0>(values[0]) - 3.6) < 1e-12 &&
+          std::abs(std::get<0>(values[2]) - 8.4) < 1e-12 &&
+          values[1] == std::make_tuple(0.0, 0),
+          "empty rings were counted or geometric rings failed to cross a wall");
+    check(calculate_neighbourhood_clearance(&env, original, 0.5, 0.25) == values,
+          "a ring at exactly the cutoff weight was omitted");
+    check(std::get<0>(calculate_neighbourhood_clearance(&env, original, 0.5, 0.5)[0]) == 2.0,
+          "empty rings changed the normalization");
+
+    env.cols = 8;
+    env.map.assign(8, 0);
+    original.assign(8, {1, 0});
+    original[7] = {100, 0};
+    check(std::get<0>(calculate_neighbourhood_clearance(&env, original)[0]) == 1.0,
+          "default neighbourhood includes radius 7");
+    original[6] = {65, 0};
+    check(std::abs(std::get<0>(calculate_neighbourhood_clearance(&env, original)[0]) -
+                   191.0 / 127.0) < 1e-12,
+          "default neighbourhood excludes radius 6 or loses fractional precision");
+
+    // Independent exhaustive ring enumeration checks prefix sums, clipping,
+    // per-ring averaging, and immutable input on rectangular and thin maps.
+    std::mt19937 rng(17);
+    for (int rows = 1; rows <= 7; ++rows)
+    for (int cols = 1; cols <= 8; ++cols)
+    for (double decay : {0.0, 0.5, 0.8})
+    {
+        env.rows = rows;
+        env.cols = cols;
+        env.map.resize(rows * cols);
+        original.resize(rows * cols);
+        for (int loc = 0; loc < rows * cols; ++loc)
+        {
+            env.map[loc] = rng() % 4 == 0 ? 1 : 0;
+            original[loc] = {env.map[loc] == 1 ? 0.0 : 1.0 + (rng() % 80) / 4.0,
+                             static_cast<int>(rng() % 8)};
+        }
+        const auto snapshot = original;
+        values = calculate_neighbourhood_clearance(&env, original, decay);
+        check(original == snapshot, "neighbourhood preprocessing modified the iterative table");
+        for (int loc = 0; loc < rows * cols; ++loc)
+        {
+            double expected = 0;
+            if (env.map[loc] != 1)
+            {
+                double numerator = std::get<0>(original[loc]);
+                double denominator = 1;
+                double weight = decay;
+                for (int radius = 1; radius < std::max(rows, cols) && weight >= 0.01;
+                     ++radius, weight *= decay)
+                {
+                    double sum = 0;
+                    int count = 0;
+                    for (int q = 0; q < rows * cols; ++q)
+                        if (env.map[q] != 1 &&
+                            std::max(std::abs(q / cols - loc / cols),
+                                     std::abs(q % cols - loc % cols)) == radius)
+                        {
+                            sum += std::get<0>(original[q]);
+                            ++count;
+                        }
+                    if (count)
+                    {
+                        numerator += weight * sum / count;
+                        denominator += weight;
+                    }
+                }
+                expected = numerator / denominator;
+            }
+            check(std::abs(std::get<0>(values[loc]) - expected) < 1e-12 &&
+                  std::get<1>(values[loc]) == 0,
+                  "prefix-sum neighbourhood differs from direct ring enumeration");
+        }
+    }
+    env.rows = env.cols = 1;
+    env.map = {0};
+    original = {{4, 5}};
+    check(calculate_neighbourhood_clearance(&env, original)[0] == std::make_tuple(4.0, 0),
+          "isolated free cell changed clearance");
+    env.map[0] = 1;
+    check(calculate_neighbourhood_clearance(&env, original)[0] == std::make_tuple(0.0, 0),
+          "obstacle-only map should have zero clearance scores");
+    env.map[0] = 0;
+    for (auto parameters : vector<pair<double,double>>{
+             {-0.5, 0.01}, {1, 0.01}, {0.5, 0}, {0.5, 1.1},
+             {std::numeric_limits<double>::quiet_NaN(), 0.01},
+             {0.5, std::numeric_limits<double>::infinity()}})
+    {
+        bool rejected = false;
+        try { calculate_neighbourhood_clearance(&env, original, parameters.first, parameters.second); }
+        catch (const std::invalid_argument&) { rejected = true; }
+        check(rejected, "invalid neighbourhood weights accepted");
+    }
+    for (int invalid_case = 0; invalid_case < 4; ++invalid_case)
+    {
+        SharedEnvironment invalid_env;
+        invalid_env.rows = 1;
+        invalid_env.cols = 1;
+        invalid_env.map = {0};
+        auto invalid_table = original;
+        if (invalid_case == 1) invalid_env.cols = 2;
+        if (invalid_case == 2) invalid_table.clear();
+        if (invalid_case == 3) invalid_table[0] = {0, 0};
+        bool rejected = false;
+        try { calculate_neighbourhood_clearance(invalid_case == 0 ? nullptr : &invalid_env, invalid_table); }
+        catch (const std::invalid_argument&) { rejected = true; }
+        check(rejected, "invalid neighbourhood map or iterative table accepted");
+    }
+}
+
+void test_shared_clearance_consumers()
+{
+    SharedEnvironment env;
+    env.rows = 3;
+    env.cols = 6;
+    env.map.assign(18, 0);
+    env.num_of_agents = 1;
+    env.parking_model = 5;
+    env.curr_states = {State(0, 0, 0)};
+    env.curr_task_schedule = {-1};
+    DefaultPlanner::schedule_initialize(1000, &env);
+
+    const auto before = DefaultPlanner::get_map_clearance();
+    const auto expected = DefaultPlanner::calculate_neighbourhood_clearance(&env, before);
+    DefaultPlanner::calculate_neighbourhood_clearance(&env);
+    check(DefaultPlanner::get_map_clearance() == expected,
+          "shared-table overload did not replace the completed input scores");
+    vector<int> ranking(18);
+    std::iota(ranking.begin(), ranking.end(), 0);
+    std::sort(ranking.begin(), ranking.end(), [&](int a, int b) {
+        return std::get<0>(expected[a]) != std::get<0>(expected[b]) ?
+            std::get<0>(expected[a]) > std::get<0>(expected[b]) : a < b;
+    });
+    check(DefaultPlanner::get_sorted_cell_ids_by_clearance() == ranking,
+          "shared-table overload did not refresh fractional ranking and tie order");
+
+    // Compare sequential and joint penalty flows with exhaustive single-agent costs.
+    // This detects integer truncation between the shared table and arc costs.
+    const vector<DefaultPlanner::Double4> flow(18, DefaultPlanner::Double4{0, 0, 0, 0});
+    for (int start : {0, 5, 17})
+    for (int model : {7, 8})
+    {
+        env.curr_states[0].location = start;
+        vector<int> schedule;
+        if (model == 7)
+            DefaultPlanner::schedule_plan_flow_dummy_combined(100, &env, flow, false, false, 64, 1, 0);
+        else
+            DefaultPlanner::schedule_plan_flow_joint_task_parking(100, schedule, &env, flow, false, false, 64, 1, 0);
+        auto cost = [&](int loc) {
+            const double c = std::get<0>(expected[loc]);
+            const int distance = std::abs(start / 6 - loc / 6) + std::abs(start % 6 - loc % 6);
+            return 100LL * distance + std::llround(6400.0 / (c*c));
+        };
+        long long best = LLONG_MAX;
+        for (int loc = 0; loc < 18; ++loc)
+            best = std::min(best, cost(loc));
+        check(cost(env.dummy_parking_allocation.at(0).at(0)) == best,
+              "parking flow did not optimize the fractional shared-clearance penalty");
+        check(DefaultPlanner::get_map_clearance() == expected,
+              "parking flow rebuilt or modified the shared clearance table");
+    }
+}
+
 void test_parking_cost_validation()
 {
     using DefaultPlanner::scale_parking_arc_cost;
@@ -531,9 +1046,398 @@ void test_parking_cost_validation()
     }
 }
 
+void test_normalized_traffic_parking()
+{
+    using namespace DefaultPlanner;
+    SharedEnvironment env;
+    env.rows = 1;
+    env.cols = 5;
+    env.map = {0, 1, 0, 0, 0};
+    vector<Double4> flow(5, Double4{0, 0, 0, 0});
+    flow[0] = Double4{1, 1, 0, 0};
+    flow[1] = Double4{1000, 0, 0, 0};
+    flow[3] = Double4{1, 2, 3, 0};
+    vector<double> traffic;
+    check(calculate_mean_nonzero_traffic(&env, flow, traffic) == 4.0 &&
+          traffic == vector<double>({2, 0, 0, 6, 0}),
+          "traffic reference includes obstacles/zeros or misses directional contributions");
+    for (auto& cell : flow) for (double& value : cell.d) value *= 10;
+    check(calculate_mean_nonzero_traffic(&env, flow, traffic) == 40.0 &&
+          traffic[0]/40 == 0.5 && traffic[3]/40 == 1.5,
+          "linear traffic normalization is not scale invariant");
+    flow.assign(5, Double4{0, 0, 0, 0});
+    check(calculate_mean_nonzero_traffic(&env, flow, traffic) == 0.0,
+          "empty traffic must have zero reference");
+
+    env.rows = 3;
+    env.cols = 6;
+    env.map.assign(18, 0);
+    env.num_of_agents = 3;
+    env.parking_model = 5;
+    env.curr_states = {State(0, 0, 0), State(5, 0, 0), State(17, 0, 0)};
+    env.curr_task_schedule = {-1, -1, 0};
+    env.task_pool.emplace(0, Task(0, {16, 17}, 0));
+    env.task_pool.at(0).agent_assigned = 2;
+    env.task_pool.at(0).idx_next_loc = 1;
+    schedule_initialize(1000, &env);
+    reset_combined_parking_model(); // reference movement cost = 1 for this oracle
+    const auto clearance = get_map_clearance();
+    std::mt19937 rng(23);
+    for (int profile = 0; profile < 3; ++profile)
+    {
+        flow.assign(18, Double4{0, 0, 0, 0});
+        if (profile == 1) flow[17] = Double4{2, 2, 0, 0}; // protected cells still contribute
+        if (profile == 2)
+            for (auto& cell : flow)
+                for (double& value : cell.d) value = (rng() % 6) / 2.0;
+        vector<double> values(18, 0.0);
+        double sum = 0;
+        int count = 0;
+        for (int loc = 0; loc < 18; ++loc)
+        {
+            for (double value : flow[loc].d) values[loc] += value;
+            if (values[loc] > 0) { sum += values[loc]; ++count; }
+        }
+        const double reference = count ? sum / count : 0;
+        for (bool use_traffic : {false, true})
+        for (auto weights : vector<pair<double,double>>{{1, 0}, {0, 0.5}, {1, 0.5}, {0, 0.1}, {1, 0.1}, {0, 0}})
+        {
+            const auto [bc, bt] = weights;
+            // Independent shortest-path enumeration exists only in the tests.
+            vector<vector<long long>> dist(18, vector<long long>(18, 1000000000));
+            for (int a = 0; a < 18; ++a)
+            for (int b = 0; b < 18; ++b)
+            {
+                if (a == b) dist[a][b] = 0;
+                if (std::abs(a / 6 - b / 6) + std::abs(a % 6 - b % 6) != 1) continue;
+                long long movement = 1;
+                if (use_traffic)
+                {
+                    const int d = a-b == 1 ? 0 : a-b == -1 ? 2 : a-b == 6 ? 1 : 3;
+                    int occupancy = 0;
+                    for (double value : flow[b].d) occupancy += static_cast<int>(value);
+                    movement += static_cast<int>((flow[a].d[d]+1) * flow[b].d[(d+2)%4]) + occupancy/2;
+                }
+                dist[a][b] = 100 * movement;
+            }
+            for (int mid = 0; mid < 18; ++mid)
+            for (int a = 0; a < 18; ++a)
+            for (int b = 0; b < 18; ++b)
+                dist[a][b] = std::min(dist[a][b], dist[a][mid] + dist[mid][b]);
+            auto penalty = [&](int loc) {
+                const double c = std::get<0>(clearance[loc]);
+                const double fc = 1/(c*c); // neighbourhood tie-breakers are zero
+                const double normalized = reference > 0 ? values[loc]/reference : 0;
+                return std::llround(1600 * (bc*fc + bt*normalized));
+            };
+            long long optimum = LLONG_MAX;
+            for (int a = 0; a < 17; ++a)
+            for (int b = 0; b < 17; ++b)
+                if (a != b)
+                    optimum = std::min(optimum, dist[0][a] + penalty(a) + dist[5][b] + penalty(b));
+            // Models 5/6/7 are coefficient settings of the sequential solver.
+            for (int model : {7, 8})
+            {
+                vector<int> proposed;
+                if (model == 7) schedule_plan_flow_dummy_combined(100, &env, flow, use_traffic, false, 16, bc, bt);
+                if (model == 8) schedule_plan_flow_joint_task_parking(100, proposed, &env, flow, use_traffic, false, 16, bc, bt);
+                const int a = env.dummy_parking_allocation.at(0).at(0);
+                const int b = env.dummy_parking_allocation.at(1).at(0);
+                check(a != b && a != 17 && b != 17 && env.dummy_parking_allocation.size() == 2,
+                      "normalized traffic parking violated destination constraints");
+                check(dist[0][a] + penalty(a) + dist[5][b] + penalty(b) == optimum,
+                      "normalized traffic assignment differs from exhaustive optimum");
+                check(env.curr_task_schedule == vector<int>({-1, -1, 0}) &&
+                      env.task_pool.at(0).agent_assigned == 2 && env.task_pool.at(0).idx_next_loc == 1 &&
+                      get_map_clearance() == clearance,
+                      "parking changed fixed tasks or the clearance table");
+                if (bc == 0 && (bt == 0 || reference == 0))
+                    check(a == 0 && b == 5, "zero destination penalty should allow staying");
+            }
+        }
+    }
+
+    // Joint task quota and assignment objective with one flexible task and one
+    // parking goal; an opened task remains fixed to agent 2.
+    env.task_pool.emplace(1, Task(1, {4, 15}, 0));
+    double mean = calculate_mean_nonzero_traffic(&env, flow, traffic);
+    auto distance = [](int a, int b) { return std::abs(a/6-b/6) + std::abs(a%6-b%6); };
+    auto joint_penalty = [&](int loc) {
+        const double c = std::get<0>(clearance[loc]);
+        return std::llround(100 * env.parking_strength * (1/(c*c) + 0.5*traffic[loc]/mean));
+    };
+    long long best = LLONG_MAX;
+    for (int task_agent : {0, 1})
+    for (int loc = 0; loc < 17; ++loc)
+        if (loc != 4)
+            best = std::min(best, 100LL * (distance(env.curr_states[task_agent].location, 4) +
+                distance(env.curr_states[1-task_agent].location, loc)) + joint_penalty(loc));
+    vector<int> proposed;
+    schedule_plan_flow_joint_task_parking(100, proposed, &env, flow, false, false);
+    check(proposed[2] == 0 && std::count(proposed.begin(), proposed.end(), 1) == 1 &&
+          env.dummy_parking_allocation.size() == 1, "joint task quota or opened assignment changed");
+    const int task_agent = proposed[0] == 1 ? 0 : 1;
+    const int target = env.dummy_parking_allocation.at(1-task_agent).at(0);
+    check(target != 4 && target != 17 && 100LL * (distance(env.curr_states[task_agent].location, 4) +
+          distance(env.curr_states[1-task_agent].location, target)) + joint_penalty(target) == best,
+          "joint normalized task-and-parking objective differs from exhaustive optimum");
+
+    // Disabled terms must not inspect traffic or construct a clearance table.
+    env.task_pool.erase(1);
+    env.curr_task_schedule = {-1, -1, 0};
+    env.parking_model = 6;
+    schedule_initialize(1000, &env);
+    flow.assign(18, Double4{1, 0, 0, 0});
+    schedule_plan_flow_dummy_combined(100, &env, flow, false, false, 16, 0, 0.5);
+    schedule_plan_flow_joint_task_parking(100, proposed, &env, flow, false, false, 16, 0, 0.1);
+    check(get_map_clearance().empty(), "traffic-only parking computed clearance");
+    flow.clear();
+    schedule_plan_flow_dummy_combined(100, &env, flow, false, false, 16, 0, 0);
+    schedule_plan_flow_joint_task_parking(100, proposed, &env, flow, false, false, 16, 0, 0);
+    check(get_map_clearance().empty(), "zero-weight parking computed clearance");
+    // Clearance-only must also skip traffic normalization (the empty snapshot
+    // is intentionally invalid for any helper that tries to read traffic).
+    schedule_plan_flow_dummy_combined(100, &env, flow, false, false, 16, 1, 0);
+    const auto old_goals = env.dummy_parking_allocation;
+    for (auto weights : vector<pair<double,double>>{{-1, 0.1}, {16, -0.1},
+             {16, std::numeric_limits<double>::quiet_NaN()}, {std::numeric_limits<double>::infinity(), 0.1}})
+    {
+        bool rejected = false;
+        try { schedule_plan_flow_dummy_combined(100, &env, flow, false, false, weights.first, 0, weights.second); }
+        catch (const std::invalid_argument&) { rejected = true; }
+        check(rejected && env.dummy_parking_allocation == old_goals, "invalid traffic weights accepted");
+    }
+}
+
+void check_same_traffic(const vector<DefaultPlanner::Double4>& a,
+                        const vector<DefaultPlanner::Double4>& b, const char* message)
+{
+    check(a.size() == b.size(), message);
+    for (size_t i = 0; i < a.size(); ++i)
+        for (int d = 0; d < 4; ++d)
+            check(a[i].d[d] == b[i].d[d], message);
+}
+
+void test_pickup_traffic_arcs()
+{
+    using namespace DefaultPlanner;
+    SharedEnvironment env;
+    env.rows = 3;
+    env.cols = 6;
+    env.map.assign(18, 0);
+    env.map[4] = 1;
+    ListDigraph graph;
+    ListDigraph::ArcMap<int> flow(graph);
+    vector<ListDigraph::Node> nodes;
+    boost::unordered_map<int,int> locations;
+    for (int loc = 0; loc < 18; ++loc)
+    {
+        nodes.push_back(graph.addNode());
+        locations[graph.id(nodes.back())] = loc;
+    }
+    const auto source = graph.addNode(), sink = graph.addNode();
+    flow[graph.addArc(source, nodes[7])] = 99;
+    flow[graph.addArc(nodes[8], sink)] = 99;
+    auto add = [&](int from, int to, int count) { flow[graph.addArc(nodes[from], nodes[to])] = count; };
+    add(7, 8, 3); add(7, 13, 2); add(7, 6, 4); add(7, 1, 5);
+    add(5, 6, 9); // Row wrap, not a grid edge.
+    add(7, 14, 9); add(7, 7, 9); add(3, 4, 9); // Diagonal, self and obstacle arcs.
+    add(12, 13, 0);
+    vector<Double4> traffic(18, Double4{0,0,0,0});
+    traffic[7].d[0] = 0.25;
+    auto expected = traffic;
+    expected[7] = Double4{3.25,2,4,5};
+    add_pickup_flow_to_background_traffic(graph, flow, locations, &env, traffic);
+    check_same_traffic(traffic, expected, "pickup traffic used incorrect direction, multiplicity or non-movement arcs");
+    vector<double> vertex;
+    check(calculate_mean_nonzero_traffic(&env, traffic, vertex) == 14.25,
+          "augmented traffic mean did not include pickup movement");
+}
+
+SharedEnvironment pickup_test_environment(int model)
+{
+    SharedEnvironment env;
+    env.rows = 3;
+    env.cols = 6;
+    env.map.assign(18, 0);
+    env.num_of_agents = 3;
+    env.parking_model = model;
+    env.curr_states = {State(0,0,0), State(5,0,0), State(17,0,0)};
+    env.curr_task_schedule = {-1,-1,1};
+    env.task_pool.emplace(0, Task(0, {2}, 0));
+    env.task_pool.emplace(1, Task(1, {17,16}, 0));
+    env.task_pool.at(1).idx_next_loc = 1;
+    env.task_pool.at(1).agent_assigned = 2;
+    return env;
+}
+
+void test_pickup_task_flow()
+{
+    using namespace DefaultPlanner;
+    vector<Double4> delivery(18, Double4{0,0,0,0});
+    delivery[17].d[2] = 1.25;
+    for (bool traffic_costs : {false, true})
+    {
+        auto original = pickup_test_environment(7);
+        auto baseline = original;
+        vector<int> before, after;
+        schedule_plan_flow(1000, before, &baseline, delivery, traffic_costs, false);
+        const auto baseline_guides = get_guide_path();
+        vector<Double4> augmented(18, Double4{99,99,99,99});
+        for (int repeat = 0; repeat < 2; ++repeat)
+        {
+            auto env = original;
+            schedule_plan_flow(1000, after, &env, delivery, traffic_costs, false, &augmented);
+            check(after == before && get_guide_path() == baseline_guides,
+                  "pickup augmentation changed first-flow assignments or paths");
+            auto expected = delivery;
+            expected[0].d[0] += 1;
+            expected[1].d[0] += 1;
+            check_same_traffic(augmented, expected, "pickup flows accumulated or counted delivery agents again");
+            check(delivery[0].d[0] == 0 && delivery[17].d[2] == 1.25,
+                  "delivery snapshot was modified");
+        }
+        auto empty = original;
+        empty.task_pool.erase(0);
+        schedule_plan_flow(1000, after, &empty, delivery, traffic_costs, false, &augmented);
+        check_same_traffic(augmented, delivery, "no-task call retained the previous pickup flow");
+        auto at_pickup = original;
+        at_pickup.task_pool.at(0).locations = {0};
+        schedule_plan_flow(1000, after, &at_pickup, delivery, traffic_costs, false, &augmented);
+        check_same_traffic(augmented, delivery, "zero-length pickup route counted terminal flow as traffic");
+    }
+}
+
+void test_sequential_pickup_dispatch()
+{
+    using namespace DefaultPlanner;
+    vector<Double4> delivery(18, Double4{0,0,0,0});
+    delivery[17].d[2] = 1.25;
+    for (int model : {4,5,6,7,8})
+    for (bool traffic_costs : {false, true})
+    for (bool enabled : {false, true})
+    {
+        TaskScheduler scheduler;
+        *scheduler.env = pickup_test_environment(model);
+        scheduler.set_flow(delivery);
+        scheduler.set_use_traffic(traffic_costs);
+        scheduler.pickup_traffic = enabled;
+        scheduler.initialize(1000);
+        const auto original = *scheduler.env;
+        vector<int> expected_schedule, actual_schedule;
+        vector<Double4> augmented;
+        if (model == 8)
+            schedule_plan_flow_joint_task_parking(1000, expected_schedule, scheduler.env,
+                delivery, traffic_costs, false, original.parking_strength, 1, 0.5);
+        else
+        {
+            schedule_plan_flow(1000, expected_schedule, scheduler.env, delivery, traffic_costs, false,
+                               enabled ? &augmented : nullptr);
+            const auto& parking = enabled ? augmented : delivery;
+            if (model == 4) schedule_plan_flow_dummy(1000, scheduler.env, parking, traffic_costs, false);
+            if (model == 5) schedule_plan_flow_dummy_combined(1000, scheduler.env, parking, traffic_costs, false,
+                                                           original.parking_strength, 1, 0);
+            if (model == 6) schedule_plan_flow_dummy_combined(1000, scheduler.env, parking, traffic_costs, false,
+                                                           original.parking_strength, 0, 0.5);
+            if (model == 7) schedule_plan_flow_dummy_combined(1000, scheduler.env, parking, traffic_costs, false,
+                                                           original.parking_strength, 1, 0.5);
+        }
+        const auto expected_goals = scheduler.env->dummy_parking_allocation;
+        const auto expected_guides = get_guide_path();
+        *scheduler.env = original;
+        scheduler.plan(1000, actual_schedule);
+        check(actual_schedule == expected_schedule && scheduler.env->dummy_parking_allocation == expected_goals &&
+              get_guide_path() == expected_guides,
+              "scheduler did not pass the expected traffic snapshot to parking");
+        check_same_traffic(scheduler.background_flow, delivery, "scheduler retained augmented traffic between calls");
+    }
+}
+
+void test_map_adaptive_parking_strength()
+{
+    using namespace DefaultPlanner;
+    check(calculate_parking_strength(33, 57) == 22.5, "warehouse-small B is incorrect");
+    check(std::abs(calculate_parking_strength(64, 64) - 32.0) < 1e-12,
+          "random-map B lost fractional precision");
+    check(std::abs(calculate_parking_strength(140, 500) - 160.0) < 1e-12,
+          "sortation-large B is incorrect");
+    check(calculate_parking_strength(500, 140) == calculate_parking_strength(140, 500),
+          "B depends on map orientation");
+    check(calculate_parking_strength(INT_MAX, INT_MAX) == static_cast<double>(INT_MAX)/2.0,
+          "map dimension sum overflowed before floating-point conversion");
+    for (double beta : {-1.0, std::numeric_limits<double>::infinity(),
+                         std::numeric_limits<double>::quiet_NaN()})
+    {
+        bool rejected = false;
+        try { calculate_parking_strength(3, 6, beta); }
+        catch (const std::invalid_argument&) { rejected = true; }
+        check(rejected, "invalid beta was accepted");
+    }
+    for (auto dimensions : vector<pair<int,int>>{{0, 6}, {3, -1}})
+    {
+        bool rejected = false;
+        try { calculate_parking_strength(dimensions.first, dimensions.second); }
+        catch (const std::invalid_argument&) { rejected = true; }
+        check(rejected, "invalid map dimensions were accepted");
+    }
+    bool overflow_rejected = false;
+    try { calculate_parking_strength(140, 500, std::numeric_limits<double>::max()); }
+    catch (const std::overflow_error&) { overflow_rejected = true; }
+    check(overflow_rejected, "overflowing adaptive strength was accepted");
+
+    for (int model : {5, 6, 7, 8})
+    for (double beta : {0.0, 0.75, 2.0})
+    {
+        TaskScheduler scheduler;
+        auto& env = *scheduler.env;
+        env.rows = 3;
+        env.cols = 6;
+        env.map.assign(18, 0);
+        env.num_of_agents = 2;
+        env.curr_states = {State(0, 0, 0), State(5, 0, 0)};
+        env.curr_task_schedule = {-1, -1};
+        env.parking_model = model;
+        env.parking_beta = beta;
+        vector<Double4> flow(18, Double4{0, 0, 0, 0});
+        flow[0] = Double4{10, 0, 0, 0};
+        scheduler.set_flow(flow);
+        scheduler.initialize(1000);
+        check(env.parking_strength == beta * 3.0, "initialization did not set map-adaptive B");
+        const double B = env.parking_strength;
+        vector<int> proposed;
+        auto run = [&](bool explicit_B, double traffic_weight) {
+            if (model == 5 || model == 6) {
+                schedule_plan_flow_dummy_combined(1000, &env, flow, false, false, B,
+                                                 model == 5 ? 1 : 0,
+                                                 model == 5 ? 0 : traffic_weight);
+            } else if (model == 7) {
+                if (explicit_B) schedule_plan_flow_dummy_combined(1000, &env, flow, false, false, B, 1, traffic_weight);
+                else schedule_plan_flow_dummy_combined(1000, &env, flow, false, false);
+            } else {
+                if (explicit_B) schedule_plan_flow_joint_task_parking(1000, proposed, &env, flow, false, false, B, 1, traffic_weight);
+                else schedule_plan_flow_joint_task_parking(1000, proposed, &env, flow, false, false);
+            }
+        };
+        const double api_traffic_weight = 0.5;
+        run(true, api_traffic_weight);
+        const auto explicit_goals = env.dummy_parking_allocation;
+        run(false, api_traffic_weight);
+        check(env.dummy_parking_allocation == explicit_goals,
+              "default parking API did not use initialized B");
+        run(true, 0.5);
+        const auto expected = env.dummy_parking_allocation;
+        scheduler.plan(1000, proposed);
+        check(env.dummy_parking_allocation == expected && env.parking_strength == B,
+              "scheduler dispatch changed adaptive B or existing traffic coefficients");
+        if (beta == 0.0)
+            check(expected.at(0).at(0) == 0 && expected.at(1).at(0) == 5,
+                  "zero beta must allow zero-cost staying");
+    }
+}
+
 void test_parking_model_dispatch()
 {
-    for (int model : {7, 8})
+    for (int model : {6, 7, 8})
     for (bool use_traffic : {false, true})
     {
         TaskScheduler scheduler;
@@ -593,6 +1497,8 @@ int main()
     try
     {
         test_batches_and_horizon();
+        test_parking_history();
+        test_gzip_results();
         test_single_step();
         test_short_empty_and_long_batches();
         test_mid_window_tasks();
@@ -605,8 +1511,17 @@ int main()
         test_native_batch_dispatch();
         test_invalid_parameters();
         test_clearance_preprocessing();
+        test_boundary_clearance();
+        test_clearance_disk_cache();
+        test_neighbourhood_clearance();
+        test_shared_clearance_consumers();
         test_parking_cost_validation();
+        test_normalized_traffic_parking();
         test_parking_model_dispatch();
+        test_map_adaptive_parking_strength();
+        test_pickup_traffic_arcs();
+        test_pickup_task_flow();
+        test_sequential_pickup_dispatch();
         std::cout << "All commit-window tests passed.\n";
     }
     catch (const std::exception& error)

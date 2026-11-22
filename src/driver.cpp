@@ -55,11 +55,11 @@ int main(int argc, char **argv)
         ("logFile,l", po::value<std::string>()->default_value(""), "redirect stdout messages into the specified log file")
         ("logDetailLevel,d", po::value<int>()->default_value(1), "the minimum severity level of log messages to display, 1--showing all the messages, 2--showing warnings and fatal errors, 3--showing fatal errors only")
         ("useTraffic,u", po::value<bool>()->default_value(false), "use of traffic in scheduling")
-        ("pickupTraffic", po::value<bool>()->default_value(true)->implicit_value(true), "add pickup-flow traffic to sequential parking (models 4-7); false restores delivery-only parking traffic")
+        ("pickupTraffic", po::value<bool>()->default_value(false)->implicit_value(false), "add pickup-flow traffic to sequential parking (models 4-7); false restores delivery-only parking traffic")
         ("assignNew,n", po::value<bool>()->default_value(false), "reserved for future use; currently has no effect")
         ("scheduleModel,m", po::value<int>()->default_value(1), "scheduler model, 1- flow, 2- flow with history edge cost, 3- greedy")
         ("parkingModel", po::value<int>()->default_value(1), "parking model: 1- random, 2- stay, 3- clearance preselection, 4- clearance parking flow, 5- all-cell clearance parking flow, 6- traffic parking flow, 7- task flow then combined clearance/traffic parking flow, 8- joint task/parking flow")
-        ("parkingBeta", po::value<double>()->default_value(0.75), "parking strength coefficient: B = beta * (map width + height) / 3")
+        ("parkingBeta", po::value<double>()->default_value(1), "parking strength coefficient: B = beta * (map width + height) / 3")
         ("boundaryAwareClearance", po::value<bool>()->default_value(true)->implicit_value(true), "treat outside-map cells as walls in base clearance; false restores boundary-ignoring clearance (smoothing is unchanged)")
         ("commitWindow,w", po::value<int>()->default_value(1), "number of action steps committed per planner call (positive)");
     clock_t start_time = clock();

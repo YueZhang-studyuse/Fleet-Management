@@ -8,6 +8,7 @@
 
 #include <random>
 #include <unordered_set>
+#include <cstddef>
 
 namespace DefaultPlanner{
 
@@ -21,7 +22,12 @@ void get_deviation(TrajLNS& lns);
 
 void update_fw_metrics(TrajLNS& lns);
 
-void frank_wolfe(TrajLNS& lns,std::unordered_set<int>& updated, TimePoint timelimit);
+struct FrankWolfeStats {
+    std::size_t iterations = 0; // Individual agent visits, including skipped visits.
+    std::size_t replans = 0;    // Visits that actually rebuilt a guide path.
+};
+
+FrankWolfeStats frank_wolfe(TrajLNS& lns,std::unordered_set<int>& updated, TimePoint timelimit);
 
 void update_dist_2_path(TrajLNS& lns, int i);
 

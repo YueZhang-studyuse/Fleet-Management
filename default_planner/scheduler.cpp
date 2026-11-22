@@ -67,6 +67,7 @@ static void log_penalty_table(const SharedEnvironment* env, PenaltyTableKind kin
     std::cout << "[parking-penalty-table] method=" << kPenaltyNames[kind]
               << " timestep=" << env->curr_timestep << " rows=" << env->rows << " cols=" << env->cols
               << " B=" << weights.B << " b_c=" << weights.b_c << " b_t=" << weights.b_t
+              << " w_bar=" << avg_step_cost
               << " avg_step_cost=" << avg_step_cost << " reference_traffic=" << reference_traffic
               << " values=unscaled_destination_penalty #=obstacle P=protected\n";
     for (int row = 0; row < env->rows; ++row)
@@ -104,7 +105,7 @@ static bool parking_clearance_ready = false;
 // are also stored in the cache, so changing them automatically rebuilds it.
 constexpr int kClearanceCacheVersion = 2;
 constexpr bool kUseNeighbourhoodClearance = true;
-constexpr double kNeighbourhoodDecay = 0.5;
+constexpr double kNeighbourhoodDecay = 0.25;
 constexpr double kNeighbourhoodMinWeight = 0.01;
 
 static nlohmann::json clearance_cache_metadata(const SharedEnvironment* env)
@@ -710,6 +711,8 @@ struct FlowParkingResult {
     std::vector<std::list<int>> paths;
     long long task_movement_scaled = 0;
     long long task_movement_steps = 0;
+    long long parking_movement_scaled = 0;
+    long long parking_movement_steps = 0;
     int candidate_count = 0;
     double avg_step_cost = 1.0;
     double reference_traffic = 0.0;
@@ -719,6 +722,20 @@ struct FlowParkingResult {
     double solve_ms = 0.0;
     double extract_ms = 0.0;
 };
+
+// Average costs of the selected spatial routes, including zero-length routes.
+// Weighted cost uses the solver's actual movement weights (unit when disabled),
+// and excludes source/sink arcs and parking destination penalties.
+static void log_path_costs(const SharedEnvironment* env, const char* method, const char* purpose,
+    size_t paths, double movement_cost, double movement_steps, bool use_traffic, double w_bar)
+{
+    std::cout << "[path-costs] method=" << method << " purpose=" << purpose
+              << " timestep=" << env->curr_timestep << " paths=" << paths
+              << " use_traffic=" << use_traffic << " w_bar=" << w_bar
+              << " avg_weighted_path_cost=" << (paths ? movement_cost / paths : 0.0)
+              << " avg_unit_path_cost=" << (paths ? movement_steps / paths : 0.0)
+              << std::endl;
+}
 
 // Common diagnostics for successful parking assignments. Count only parking
 // guide paths, including in the joint task/parking flow. These are planned
@@ -800,6 +817,8 @@ void schedule_plan_flow(int time_limit, std::vector<int> & proposed_schedule, Sh
 
     if (num_workers == 0 || num_tasks == 0)
     {
+        log_path_costs(env, "task-flow", "pickup", 0, 0, 0, use_traffic,
+                       use_traffic ? avg_task_step_cost_for_parking : 1.0);
         return;
     }
 
@@ -1069,6 +1088,9 @@ void schedule_plan_flow(int time_limit, std::vector<int> & proposed_schedule, Sh
         {
             avg_task_step_cost_for_parking = total_task_movement_cost / static_cast<double>(total_task_movement_steps);
         }
+        log_path_costs(env, "task-flow", "pickup", assigned_count,
+                       total_task_movement_cost, total_task_movement_steps,
+                       use_traffic, use_traffic ? avg_task_step_cost_for_parking : 1.0);
         if (parking_background_flow)
         {
             // Read the original optimal arc flows, not the consumed extraction copy.
@@ -1114,6 +1136,8 @@ void schedule_plan_flow_dummy(int time_limit, SharedEnvironment* env, std::vecto
     {
         env->dummy_parking_allocation.clear();
         log_parking_summary(env, "preselected");
+        log_path_costs(env, "preselected", "parking", 0, 0, 0, use_traffic,
+                       use_traffic ? avg_task_step_cost_for_parking : 1.0);
         return;
     }
     ensure_parking_clearance(env);
@@ -1276,6 +1300,8 @@ void schedule_plan_flow_dummy(int time_limit, SharedEnvironment* env, std::vecto
     new_allocations.reserve(num_workers);
     new_guide_paths.reserve(num_workers);
     used_targets.reserve(num_workers);
+    double total_parking_movement_cost = 0.0;
+    long long total_parking_movement_steps = 0;
 
     for (int i = 0; i < num_workers; ++i)
     {
@@ -1313,7 +1339,11 @@ void schedule_plan_flow_dummy(int time_limit, SharedEnvironment* env, std::vecto
                 if (next == sink)
                     target_loc = loc;
                 else
+                {
+                    total_parking_movement_cost += cost[arc];
+                    ++total_parking_movement_steps;
                     current = next;
+                }
                 break;
             }
 
@@ -1351,6 +1381,9 @@ void schedule_plan_flow_dummy(int time_limit, SharedEnvironment* env, std::vecto
     const double elapsed_time = std::chrono::duration<double>(end_time - start_time).count();
     std::cout << "Dummy parking flow solving time: "<< elapsed_time << " seconds" << std::endl;
     log_parking_summary(env, "preselected");
+    log_path_costs(env, "preselected", "parking", num_workers,
+                   total_parking_movement_cost, total_parking_movement_steps,
+                   use_traffic, use_traffic ? avg_task_step_cost_for_parking : 1.0);
 }
 
 // One pass over the current snapshot, including protected task destinations in
@@ -1443,6 +1476,10 @@ FlowParkingResult solve_parking_flow(
     result.assigned_tasks.assign(N, -1);
     result.parking_goals.assign(N, -1);
     result.paths.resize(N);
+    double avg_step_cost = use_traffic ? avg_task_step_cost_for_parking : 1.0;
+    if (!std::isfinite(avg_step_cost) || avg_step_cost < 1.0)
+        avg_step_cost = 1.0;
+    result.avg_step_cost = avg_step_cost;
     if (!N)
         return result;
     // Each unit of flow can traverse at most |V|-1 movement arcs on an
@@ -1453,10 +1490,6 @@ FlowParkingResult solve_parking_flow(
         (32.0 * std::max(1, N));
     const double safe_movement_scaled_cost =
         safe_terminal_scaled_cost / std::max(1, map_size);
-
-    double avg_step_cost = use_traffic ? avg_task_step_cost_for_parking : 1.0;
-    if (!std::isfinite(avg_step_cost) || avg_step_cost < 1.0)
-        avg_step_cost = 1.0;
 
     // No clearance computation at all when b_c==0 (or when nobody parks).
     const ClearanceTable* clearance = nullptr;
@@ -1516,7 +1549,6 @@ FlowParkingResult solve_parking_flow(
         }
     }
 
-    result.avg_step_cost = avg_step_cost;
     result.reference_traffic = reference_traffic;
     const auto penalty_kind = combined ? JointPenalty : sequential_penalty_kind(w);
     auto penalty_table = parking_quota ? prepare_penalty_table_log(env, penalty_kind) : std::vector<double>{};
@@ -1636,6 +1668,8 @@ FlowParkingResult solve_parking_flow(
                     if (!vertex_traffic.empty())
                         result.total_selected_traffic += vertex_traffic[loc];
                     result.parking_goals[i] = loc;
+                    result.parking_movement_scaled += path_cost;
+                    result.parking_movement_steps += moved;
                     ++parked_count;
                     done = true;
                 } else {
@@ -1672,7 +1706,7 @@ FlowParkingResult solve_parking_flow(
 }
 
 void log_parking_flow_result(const char* label, const FlowParkingResult& r,
-    const ParkingWeights& w, double beta)
+    const ParkingWeights& w, double beta, const SharedEnvironment* env, bool use_traffic, bool joint)
 {
     const int tasks = static_cast<int>(std::count_if(
         r.assigned_tasks.begin(), r.assigned_tasks.end(), [](int t){return t!=-1;}));
@@ -1689,6 +1723,7 @@ void log_parking_flow_result(const char* label, const FlowParkingResult& r,
               << " graph_ms=" << r.graph_ms
               << " solver_ms=" << r.solve_ms
               << " extraction_ms=" << r.extract_ms
+              << " w_bar=" << r.avg_step_cost
               << " avg_step_cost=" << r.avg_step_cost
               << " reference_traffic=" << r.reference_traffic;
     if (w.B > 0.0 && w.b_c > 0.0)
@@ -1696,6 +1731,14 @@ void log_parking_flow_result(const char* label, const FlowParkingResult& r,
     if (w.B > 0.0 && w.b_t > 0.0)
         std::cout << " avg_target_traffic=" << (idle ? r.total_selected_traffic / idle : 0.0);
     std::cout << std::endl;
+    const char* method = joint ? "joint" : kPenaltyNames[sequential_penalty_kind(w)];
+    if (joint)
+        log_path_costs(env, method, "pickup", tasks,
+                       static_cast<double>(r.task_movement_scaled) / kParkingCostScale,
+                       r.task_movement_steps, use_traffic, r.avg_step_cost);
+    log_path_costs(env, method, "parking", idle,
+                   static_cast<double>(r.parking_movement_scaled) / kParkingCostScale,
+                   r.parking_movement_steps, use_traffic, r.avg_step_cost);
 }
 
 // Call once from schedule_initialize() when starting a new simulation to
@@ -1742,6 +1785,8 @@ void schedule_plan_flow_dummy_combined(
     if (idle.empty()) {
         env->dummy_parking_allocation.clear();
         log_parking_summary(env, method);
+        log_path_costs(env, method, "parking", 0, 0, 0, use_traffic,
+                       use_traffic ? avg_task_step_cost_for_parking : 1.0);
         return;
     }
     const auto r = solve_parking_flow(env,background_flow,use_traffic,weights,
@@ -1753,7 +1798,7 @@ void schedule_plan_flow_dummy_combined(
         env->dummy_parking_allocation[a] = {r.parking_goals[i]};
         agent_guide_path[a] = r.paths[i];
     }
-    log_parking_flow_result("parking-second-flow",r,weights,env->parking_beta);
+    log_parking_flow_result("parking-second-flow",r,weights,env->parking_beta,env,use_traffic,false);
     log_parking_summary(env, method);
 }
 
@@ -1867,7 +1912,7 @@ void schedule_plan_flow_joint_task_parking(
             (static_cast<double>(kParkingCostScale) * r.task_movement_steps);
     if (!use_traffic)
         avg_task_step_cost_for_parking = 1.0;
-    log_parking_flow_result("task-and-parking-one-flow",r,weights,env->parking_beta);
+    log_parking_flow_result("task-and-parking-one-flow",r,weights,env->parking_beta,env,use_traffic,true);
     log_parking_summary(env, "joint");
 }
 

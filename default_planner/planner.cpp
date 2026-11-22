@@ -163,6 +163,14 @@ namespace DefaultPlanner{
         actions.reserve(commit_steps);
         prev_states = env->curr_states;
         vector<size_t> next_goal(env->num_of_agents, 0);
+        vector<bool> needed_guide(env->num_of_agents, false);
+        size_t guides_needed = 0, guide_requests = 0;
+        size_t guides_imported = 0, guides_computed = 0;
+        double guide_refresh_ms = 0.0, fw_ms = 0.0;
+        FrankWolfeStats fw_stats;
+        const auto elapsed_ms = [](TimePoint from, TimePoint to) {
+            return std::chrono::duration<double, std::milli>(to - from).count();
+        };
 
         for (int step = 0; step < commit_steps; step++)
         {
@@ -171,6 +179,7 @@ namespace DefaultPlanner{
             decision.assign(env->map.size(), -1);
             next_states.assign(env->num_of_agents, State());
 
+            const auto guide_start = std::chrono::steady_clock::now();
             for (int i = 0; i < env->num_of_agents; i++)
             {
                 prev_decision[prev_states[i].location] = i;
@@ -190,6 +199,12 @@ namespace DefaultPlanner{
                 require_guide_path[i] = trajLNS.trajs[i].empty() || trajLNS.trajs[i].back() != target;
                 if (require_guide_path[i])
                 {
+                    ++guide_requests;
+                    if (!needed_guide[i])
+                    {
+                        needed_guide[i] = true;
+                        ++guides_needed;
+                    }
                     p[i] = p_copy[i];
                     // Even when no time remains to rebuild a guide, PIBT must
                     // not use distances or traffic flow for the previous goal.
@@ -228,15 +243,22 @@ namespace DefaultPlanner{
                     trajLNS.trajs[i].assign(guide->second.begin(), guide->second.end());
                     add_traj(trajLNS, i);
                     update_dist_2_path(trajLNS, i);
+                    ++guides_imported;
                 }
                 else
+                {
                     update_traj(trajLNS, i, prev_states[i].location);
+                    ++guides_computed;
+                }
             }
+            guide_refresh_ms += elapsed_ms(guide_start, std::chrono::steady_clock::now());
 
             if (step == 0)
             {
                 std::unordered_set<int> updated;
-                frank_wolfe(trajLNS, updated, guide_deadline);
+                const auto fw_start = std::chrono::steady_clock::now();
+                fw_stats = frank_wolfe(trajLNS, updated, guide_deadline);
+                fw_ms = elapsed_ms(fw_start, std::chrono::steady_clock::now());
             }
 
             std::sort(ids.begin(), ids.end(), [&](int a, int b) { return p[a] > p[b]; });
@@ -261,6 +283,24 @@ namespace DefaultPlanner{
             }
             prev_states = next_states;
         }
+        const double planner_ms = elapsed_ms(start_time, std::chrono::steady_clock::now());
+        // One summary per planner call, aggregating all predicted steps. Required
+        // refreshes and optional FW replans are counted separately. A deferred
+        // request can recur at another step if its guide is still missing.
+        cout << "[path-planner] timestep=" << env->curr_timestep
+             << " commit_steps=" << commit_steps
+             << " agents=" << env->num_of_agents
+             << " guides_needed=" << guides_needed
+             << " guide_requests=" << guide_requests
+             << " guides_imported=" << guides_imported
+             << " guides_computed=" << guides_computed
+             << " guide_requests_deferred=" << guide_requests - guides_imported - guides_computed
+             << " fw_iterations=" << fw_stats.iterations
+             << " fw_replans=" << fw_stats.replans
+             << " guide_refresh_ms=" << guide_refresh_ms
+             << " fw_ms=" << fw_ms
+             << " guide_ms=" << guide_refresh_ms + fw_ms
+             << " planner_ms=" << planner_ms << endl;
     }
 
     void plan(int time_limit, vector<vector<Action>>& actions, SharedEnvironment* env,
