@@ -44,7 +44,8 @@ void reset_combined_parking_model();
 
 // Parking scores: B * avg_step_cost * (b_c * F_C + b_t * T / mean_nonzero_T).
 // An all-zero traffic field contributes zero. Disabled terms skip preprocessing.
-// Models 5/6/7 share this solver: (b_c,b_t) = (1,0)/(0,0.5)/(1,0.5).
+// Models 5/6/7 share this solver. TaskScheduler passes configured coefficients
+// from env->parking_b_c/b_t, disabling b_t for model 5 and b_c for model 6.
 // Two-flow approach:
 // Run task assignment first, then assign parking goals to idle agents.
 void schedule_plan_flow_dummy_combined( int time_limit, SharedEnvironment* env, const std::vector<Double4>& background_flow, bool use_traffic, bool new_only, double B, double b_c = 1.0, double b_t = 0.5);

@@ -55,5 +55,7 @@ public:
     int parking_model = 1;
     double parking_beta = 0.75; // Configure before scheduler initialization.
     double parking_strength = 0.0; // B, computed once from the map dimensions.
+    double parking_b_c = 2.0; // Clearance penalty coefficient (models 5, 7, 8).
+    double parking_b_t = 0.5; // Traffic penalty coefficient (models 6, 7, 8).
     bool boundary_aware_clearance = true; // Treat outside-map cells as walls in base clearance.
 };

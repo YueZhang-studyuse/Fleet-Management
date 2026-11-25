@@ -102,7 +102,7 @@ the first flow assigns unopened pickups, so those contributions are disjoint.
 
 Use `--pickupTraffic false` to recover delivery-only sequential parking, or
 `--pickupTraffic true` to enable augmentation explicitly. Model 8's joint flow
-and models 1–3 ignore this option. Model 7 retains `b_c=1`, `b_t=0.5` and the
+and models 1–3 ignore this option. Model 7 defaults to `b_c=2`, `b_t=0.5` and the
 map-adaptive B. Compare otherwise identical runs, for example:
 
 ```shell
@@ -128,14 +128,28 @@ Models 5–7 all call `schedule_plan_flow_dummy_combined` after task assignment:
 
 | Model | `b_c` | `b_t` |
 |---|---:|---:|
-| 5 (clearance only) | 1 | 0 |
+| 5 (clearance only) | 2 | 0 |
 | 6 (traffic only) | 0 | 0.5 |
-| 7 (clearance + traffic) | 1 | 0.5 |
-| 8 (joint task + parking) | 1 | 0.5 |
+| 7 (clearance + traffic) | 2 | 0.5 |
+| 8 (joint task + parking) | 2 | 0.5 |
+
+Configure the scheduler's coefficients with `--b_c` (default `2.0`) and `--b_t`
+(default `0.5`). Values must be finite and non-negative; zero disables a penalty
+term. Model 5 uses only `--b_c` and keeps `b_t=0`; model 6 uses only `--b_t`
+and keeps `b_c=0`. Models 7 and 8 use both options. Models 1–4 ignore them.
+
+```shell
+./build/lifelong --inputFile instances/empty/empty_300_300.json --parkingModel 7 --b_c 1.25 --b_t 0.8 --output result.json --gzip
+```
+
+The C++ scheduler settings are `SharedEnvironment::parking_b_c` and
+`parking_b_t`. Solver logs show the effective `b_c` and `b_t`. These options
+do not change `B`, traffic-weighted movement costs, or the static clearance cache.
 
 Model 8 retains its joint task-and-parking solver and delivery-only traffic input.
 The separate model 5/6 functions have been removed. Both remaining penalty APIs
-default to `b_c=1`, `b_t=0.5`; pass explicit coefficients for component ablations.
+retain their direct-call defaults `b_c=1`, `b_t=0.5`; the scheduler passes its
+configured coefficients explicitly.
 These coefficients remain independent of `beta` and configurable in the C++ APIs.
 Equal-cost assignments may differ after switching to the shared solver.
 The former model 9 has been removed; select models 6–8 for traffic-based parking.
@@ -160,6 +174,29 @@ Joint-flow statistics exclude task-assigned agents and their paths. Calls with
 no parking agents report zero counts and averages; an all-stay call reports a
 stay fraction of 1 and zero relocation distances. Models 5–7 share the `[parking-second-flow]` solver diagnostics, including timing,
 average movement cost, and active clearance/traffic statistics.
+The `w_bar` field is the reference movement-step cost used in that solve's parking
+penalty; `avg_step_cost` is retained as an identical alias. Penalty-table headers
+also include `w_bar`. For model 8, this is the reference used by the completed
+solve, not the updated reference saved for the next call.
+
+Task and parking flows also print `[path-costs]` with `purpose=pickup` or
+`purpose=parking`, the method, timestep, path count, `use_traffic`, and `w_bar`:
+
+| Field | Meaning |
+|---|---|
+| `avg_weighted_path_cost` | Sum of movement-edge costs along the selected paths, divided by the number of paths |
+| `avg_unit_path_cost` | Sum of movement steps along those same paths, divided by the number of paths |
+
+The weighted average uses the solver's actual movement costs, including traffic
+when `use_traffic=1`; with traffic weighting disabled, both averages coincide.
+Costs exclude parking destination penalties and the integer scaling factor of
+100. The unit-cost average measures the selected routes; it does not solve a
+separate shortest-path problem. Zero-length pickup/parking paths are included,
+and an empty group reports zero averages. Pickup statistics cover the assignments
+made by this flow, excluding previously opened delivery tasks. Joint model 8
+reports pickup and parking groups separately, using the reference `w_bar` that
+was available before its solve. In sequential parking, the reference comes from
+the pickup flow, so it need not equal the parking group's cost-per-step ratio.
 
 Models 5–8 also print a `[parking-penalty-table]` grid at the first parking
 calculation and at steps 100, 200, 300, etc. If a commit window or timeout skips
@@ -306,6 +343,31 @@ Because planning is synchronous, timeout accounting happens after a planner
 returns; it cannot interrupt a planner that never returns. Preprocessing keeps
 its existing separate timeout enforcement.
 
+The default path planner prints one `[path-planner]` summary per commit, labelled
+with its starting `timestep`, `commit_steps`, and agent count. Counters reset for
+each call and include guide refreshes after goal changes within the window:
+
+| Field | Meaning |
+|---|---|
+| `guides_needed` | Unique agents needing a missing or changed-goal guide |
+| `guide_requests` | Total required refresh requests across the window; an agent can request more than once |
+| `guides_imported` | Requests served by importing the scheduler's guide path |
+| `guides_computed` | Requests served by a new path search, excluding Frank–Wolfe replans |
+| `guide_requests_deferred` | Requests left unserved when the refresh budget expired |
+| `fw_iterations` | Frank–Wolfe loop iterations: individual agent visits, including skipped visits, not full sweeps |
+| `fw_replans` | Frank–Wolfe visits that actually recomputed a guide |
+| `guide_refresh_ms` | Goal/heuristic preparation, stale-guide removal, imports, required path searches and distance-table updates |
+| `fw_ms` | Frank–Wolfe time, including its metric preparation, ordering and path replans |
+| `guide_ms` | `guide_refresh_ms + fw_ms`, accumulated across the commit |
+| `planner_ms` | Total path-planner call time through the completed PIBT rollout, before printing this summary |
+
+`guide_requests = guides_imported + guides_computed + guide_requests_deferred`.
+A deferred request may be counted again at a later step if its guide is still
+missing. Guides already valid for the current goal do not count as required
+refreshes, but Frank–Wolfe can still optimize them. These times exclude the task
+scheduler's earlier flow solve. Frank–Wolfe runs once at the start of each commit;
+its iteration count depends on the remaining time budget.
+
 Build and run the C++ regression tests with:
 
 ```shell
@@ -360,6 +422,21 @@ Select parking models inside `run_exp.py`, alongside the other sweep settings:
 ```python
 PARKING_MODELS = [5, 6, 7, 8]
 ```
+
+Sweep coefficients with two independent lists in the script:
+
+```python
+B_C_VALUES = [1.0, 2.0]
+B_T_VALUES = [0.0, 0.5, 1.0]
+```
+
+This runs all six coefficient combinations for each instance and other setting
+combination. Both lists default to `[]`; an empty list omits its CLI option and
+uses the executable's default. One list can be empty while the other is swept.
+Duplicate numeric values run once, and invalid or negative values are rejected
+before simulations start. Explicit values add filename tags such as
+`_bc2.0_bt0.5` to results and logs. Model 5 still disables the traffic term,
+model 6 disables clearance, and models 1–4 ignore these coefficients.
 
 ```shell
 python3 run_exp.py --domains empty:3 warehouseSmallMix:5

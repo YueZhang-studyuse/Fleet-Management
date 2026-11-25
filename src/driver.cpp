@@ -60,6 +60,8 @@ int main(int argc, char **argv)
         ("scheduleModel,m", po::value<int>()->default_value(1), "scheduler model, 1- flow, 2- flow with history edge cost, 3- greedy")
         ("parkingModel", po::value<int>()->default_value(1), "parking model: 1- random, 2- stay, 3- clearance preselection, 4- clearance parking flow, 5- all-cell clearance parking flow, 6- traffic parking flow, 7- task flow then combined clearance/traffic parking flow, 8- joint task/parking flow")
         ("parkingBeta", po::value<double>()->default_value(1), "parking strength coefficient: B = beta * (map width + height) / 3")
+        ("b_c", po::value<double>()->default_value(2.0), "clearance penalty coefficient for parking models 5, 7, 8; model 6 keeps b_c=0")
+        ("b_t", po::value<double>()->default_value(0.5), "traffic penalty coefficient for parking models 6, 7, 8; model 5 keeps b_t=0")
         ("boundaryAwareClearance", po::value<bool>()->default_value(true)->implicit_value(true), "treat outside-map cells as walls in base clearance; false restores boundary-ignoring clearance (smoothing is unchanged)")
         ("commitWindow,w", po::value<int>()->default_value(1), "number of action steps committed per planner call (positive)");
     clock_t start_time = clock();
@@ -81,6 +83,14 @@ int main(int argc, char **argv)
     }
 
     const int parking_model = vm["parkingModel"].as<int>();
+    const double parking_b_c = vm["b_c"].as<double>();
+    const double parking_b_t = vm["b_t"].as<double>();
+    if (!std::isfinite(parking_b_c) || parking_b_c < 0.0 ||
+        !std::isfinite(parking_b_t) || parking_b_t < 0.0)
+    {
+        std::cerr << "b_c and b_t must be finite and non-negative.\n";
+        return 1;
+    }
     if (parking_model < 1 || parking_model > 8)
     {
         std::cerr << "parkingModel must be between 1 and 8.\n";
@@ -170,6 +180,8 @@ int main(int argc, char **argv)
     planner->env->file_storage_path = file_storage_path;
     planner->env->parking_model = vm["parkingModel"].as<int>();
     planner->env->parking_beta = parking_beta;
+    planner->env->parking_b_c = parking_b_c;
+    planner->env->parking_b_t = parking_b_t;
     planner->env->boundary_aware_clearance = vm["boundaryAwareClearance"].as<bool>();
 
     planner->scheduler->set_use_traffic(vm["useTraffic"].as<bool>());

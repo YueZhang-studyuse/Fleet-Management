@@ -45,6 +45,14 @@ Edit these settings inside this script:
     PARKING_MODELS = [7]         Run sequential additive clearance/traffic parking.
     PARKING_MODELS = [5, 6, 7, 8] Sweep clearance-only, normalized traffic-only,
                                   sequential additive, and joint additive parking.
+    B_C_VALUES = []              Omit --b_c; use the executable's default (currently 2.0).
+    B_T_VALUES = []              Omit --b_t; use the executable's default (currently 0.5).
+    B_C_VALUES = [1.0, 2.0]      Sweep clearance penalty coefficients.
+    B_T_VALUES = [0.0, 0.5, 1.0] Sweep traffic penalty coefficients.
+                                These examples produce 2 * 3 = 6 combinations.
+                                Values must be finite and non-negative; duplicates
+                                run once. Model 5 keeps b_t=0, model 6 keeps b_c=0,
+                                and models 1-4 ignore these coefficients.
     SCHEDULE_MODELS              Scheduler-model values passed to --scheduleModel.
     USE_TRAFFIC_VALUES          [True], [False], or [False, True]; controls
                                 traffic-aware scheduling movement costs.
@@ -58,17 +66,20 @@ Edit these settings inside this script:
     EXPERIMENT_NAME             Subfolder identifying this experiment batch.
     CONTINUE_ON_ERROR           Whether to continue after a failed simulation.
 
-Each instance runs every combination of the scheduler, parking, and traffic
-settings. An empty PARKING_MODELS list runs once per other combination and
+Each instance runs every combination of the scheduler, parking, traffic, and
+coefficient settings. Each empty coefficient list contributes one default case
+and omits that CLI option. An empty PARKING_MODELS list runs once per other combination and
 omits --parkingModel, allowing the executable's default to apply.
 Results go to outputs/<domain>_sweep/<EXPERIMENT_NAME>/{json,logs,cout}/.
 Filenames include the commit window and, when selected explicitly, parking model.
+Explicit coefficients add tags such as _bc2.0_bt0.5 to all output filenames.
 Every run enables --gzip and writes compact JSON to a .json.gz file; logs and
 cout remain plain text. Read results with gzip.open(path, "rt") and json.load().
 """
 
 import argparse
 import itertools
+import math
 import subprocess
 import sys
 from pathlib import Path
@@ -106,6 +117,8 @@ OUTPUT_SCREEN = 1
 SCHEDULE_MODELS = [1]          # -m / --scheduleModel
 PARKING_MODELS = []            # --parkingModel; empty uses the executable's default
 USE_TRAFFIC_VALUES = [True]   # -u / --useTraffic
+B_C_VALUES = []              # --b_c; empty uses the executable's default
+B_T_VALUES = []              # --b_t; empty uses the executable's default
 
 # Optional subset, shared by all selected domains: (agents, task-reveal count).
 # Example: [(300, 100), (500, 200)]. Explicit pairs override --skipLess.
@@ -166,6 +179,21 @@ def main() -> int:
         domain_windows[domain] = window
     domains = list(domain_windows)
     parking_models = list(dict.fromkeys(PARKING_MODELS)) or [None]
+    coefficient_sweeps = []
+    for name, values in (("B_C_VALUES", B_C_VALUES), ("B_T_VALUES", B_T_VALUES)):
+        normalized = []
+        for value in values:
+            if type(value) not in (int, float):
+                parser.error(f"{name} must contain finite, non-negative numbers.")
+            try:
+                value = float(value)
+            except OverflowError:
+                parser.error(f"{name} must contain finite, non-negative numbers.")
+            if not math.isfinite(value) or value < 0:
+                parser.error(f"{name} must contain finite, non-negative numbers.")
+            normalized.append(0.0 if value == 0 else value)
+        coefficient_sweeps.append(list(dict.fromkeys(normalized)) or [None])
+    b_c_values, b_t_values = coefficient_sweeps
     selected_pairs = set()
     for pair in AGENT_TASK_PAIRS:
         if (not isinstance(pair, (tuple, list)) or len(pair) != 2 or
@@ -199,7 +227,9 @@ def main() -> int:
         itertools.product(
             SCHEDULE_MODELS,
             parking_models,
-            USE_TRAFFIC_VALUES
+            USE_TRAFFIC_VALUES,
+            b_c_values,
+            b_t_values,
         )
     )
 
@@ -242,6 +272,10 @@ def main() -> int:
     print("Parking models: " + ", ".join(
         str(model) if model is not None else "executable default" for model in parking_models
     ))
+    for name, values in (("b_c", b_c_values), ("b_t", b_t_values)):
+        print(f"{name} values: " + ", ".join(
+            str(value) if value is not None else "executable default" for value in values
+        ))
     if selected_pairs:
         print(f"Selected (agents, task-reveal count) pairs: {sorted(selected_pairs)} (--skipLess ignored)")
     for domain in domains:
@@ -259,11 +293,14 @@ def main() -> int:
         cout_dir = run_root / "cout"
         for directory in (json_dir, log_dir, cout_dir):
             directory.mkdir(parents=True, exist_ok=True)
-        for model, parking_model, use_traffic in combos:
+        for model, parking_model, use_traffic, b_c, b_t in combos:
             run_idx += 1
             parking_tag = f"_pm{parking_model}" if parking_model is not None else ""
+            coefficient_tag = (f"_bc{b_c}" if b_c is not None else "") + (
+                f"_bt{b_t}" if b_t is not None else ""
+            )
             run_tag = (
-                f"{instance.stem}_m{model}{parking_tag}_w{window}_u{int(use_traffic)}"
+                f"{instance.stem}_m{model}{parking_tag}_w{window}_u{int(use_traffic)}{coefficient_tag}"
             )
             out_file = json_dir / f"{run_tag}.json.gz"
             log_file = log_dir / f"{run_tag}.log"
@@ -295,11 +332,17 @@ def main() -> int:
             ]
             if parking_model is not None:
                 cmd.extend(["--parkingModel", str(parking_model)])
+            if b_c is not None:
+                cmd.extend(["--b_c", str(b_c)])
+            if b_t is not None:
+                cmd.extend(["--b_t", str(b_t)])
 
             print(
                 f"[{run_idx}/{total_runs}] {instance.name} "
                 f"m={model} parking={parking_model if parking_model is not None else 'default'} "
-                f"w={window} u={int(use_traffic)}"
+                f"w={window} u={int(use_traffic)} "
+                f"b_c={b_c if b_c is not None else 'default'} "
+                f"b_t={b_t if b_t is not None else 'default'}"
             )
             with cout_file.open("w", encoding="utf-8") as fout:
                 result = subprocess.run(
